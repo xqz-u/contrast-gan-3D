@@ -10,6 +10,14 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 logger = create_logger(name=__name__)
 
 
+def basename(path: Union[str, Path]) -> str:
+    return str(path).split("/")[-1]
+
+
+def stem(path: Union[str, Path]) -> str:
+    return basename(path).split(".")[0]
+
+
 def load_ASOCA_annotated_centerlines(annotation_fname: Union[str, Path]) -> np.ndarray:
     with open(annotation_fname) as fd:
         centerlines = [list(map(float, line.strip().split()[1:])) for line in fd]
@@ -46,9 +54,7 @@ def load_h5_image(
     }
 
 
-def load_centerlines(
-    folder_path: Union[str, Path], create: bool = True
-) -> np.ndarray:
+def load_centerlines(folder_path: Union[str, Path], create: bool = True) -> np.ndarray:
     folder_path = Path(folder_path)
 
     vessel_files = folder_path.glob("vessel[0-9]*.txt")
@@ -86,8 +92,7 @@ def sitk_to_h5(
     logger.debug("CCTA: %s centerlines: %s", image.shape, centerlines.shape)
 
     # take care of filenames ending with multiple extensions, e.g. .nii.gz
-    basename = f"{str(sitk_img_path).split('/')[-1].split('.')[0]}"
-    outpath = (out_dir / f"{basename}.h5").resolve()
+    outpath = (out_dir / f"{stem(sitk_img_path)}.h5").resolve()
     logger.debug("H5 file: '%s'", str(outpath))
 
     with h5py.File(outpath, "w") as h5_file:
