@@ -1,17 +1,24 @@
 from collections import defaultdict
-from pathlib import Path
 from typing import Iterable, Optional, Tuple, Union
 
 import h5py
 import numpy as np
-import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 
 from contrast_gan_3D import config
+from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.utils import logging_utils
 
 logger = logging_utils.create_logger(name=__name__)
+
+
+def ensure_2D_axes(axes: Union[np.ndarray, Axes]) -> np.ndarray:
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+    if len(axes.shape) < 2:
+        axes = axes[None, ...]
+    return axes
 
 
 def compute_grid_size(n: int) -> Tuple[int, int]:
@@ -60,10 +67,7 @@ def plot_axial_slices(
 
     if axes is None:
         _, axes = plt.subplots(*compute_grid_size(slices.shape[-1]), figsize=figsize)
-    if not isinstance(axes, np.ndarray):
-        axes = np.array([axes])
-    if len(axes.shape) < 2:
-        axes = axes[None, ...]
+    axes = ensure_2D_axes(axes)
 
     for i, ax in enumerate(axes.flat):
         if i < slices.shape[-1]:
@@ -152,12 +156,12 @@ def plot_image_histogram(
     *images_bw,
     tight: bool = False,
     axes: Optional[Union[Axes, np.ndarray]] = None,
+    figsize: Tuple[int, int] = (10, 5),
     **hist_kwargs,
 ) -> np.ndarray:
     if axes is None:
-        _, axes = plt.subplots(*compute_grid_size(len(images_bw)), figsize=(10, 5))
-    if isinstance(axes, Axes):
-        axes = np.array([axes])
+        _, axes = plt.subplots(*compute_grid_size(len(images_bw)), figsize=figsize)
+    axes = ensure_2D_axes(axes)
 
     imgs_pad = [*images_bw] + [None] * (len(axes.flat) - len(images_bw))
 
@@ -179,15 +183,15 @@ def plot_ostia_patch(
     ostia_patch: np.ndarray,
     coords: Union[Iterable[int], str] = "middle",
     axes: Optional[Union[np.ndarray, Axes]] = None,
-    vmin: int = -260,
-    vmax: int = 740,
+    vmin: int = VMIN,
+    vmax: int = VMAX,
     title: Optional[str] = None,
 ) -> np.ndarray:
     if isinstance(coords, str):
         assert coords == "middle"
-        axial_i, sagittal_i, coronal_i = np.array(ostia_patch.shape[1:]) // 2
+        x, y, z = np.array(ostia_patch.shape[1:]) // 2
     else:
-        axial_i, sagittal_i, coronal_i = coords
+        x, y, z = coords
 
     if axes is None:
         _, axes = plt.subplots(2, 3, figsize=(10, 5))
@@ -197,9 +201,12 @@ def plot_ostia_patch(
 
     kwargs = dict(zip(["vmin", "vmax", "cmap"], [vmin, vmax, "gray"]))
     for i in range(2):
-        axes[i, 0].imshow(ostia_patch[i, axial_i, :, :], **kwargs)
-        axes[i, 1].imshow(ostia_patch[i, :, sagittal_i, :], **kwargs)
-        axes[i, 2].imshow(ostia_patch[i, :, :, coronal_i], **kwargs)
+        # axial
+        axes[i, 0].imshow(ostia_patch[i, ..., z], **kwargs)
+        # sagittal
+        axes[i, 1].imshow(ostia_patch[i, :, y, :], **kwargs)
+        # coronal
+        axes[i, 2].imshow(ostia_patch[i, x, ...], **kwargs)
 
     return axes
 
@@ -209,25 +216,21 @@ def plot_mid_slice(
     axes: Optional[np.ndarray] = None,
     title: Optional[str] = None,
     tight: bool = True,
-    vmin: Optional[int] = None,
-    vmax: Optional[int] = None,
+    vmin: int = VMIN,
+    vmax: int = VMAX,
 ) -> np.ndarray:
     if axes is None:
         _, axes = plt.subplots(1, 3, figsize=(10, 5))
-    if not isinstance(axes, np.ndarray):
-        axes = np.array([axes])
-    if len(axes.shape) < 2:
-        axes = axes[None, ...]
+    axes = ensure_2D_axes(axes)
 
     args = dict(zip(["cmap", "vmin", "vmax"], ["gray", vmin, vmax]))
     middle_x, middle_y, middle_z = image.shape // np.array(2)
 
-    axes[0, 0].imshow(image[:, :, middle_z].T, **args)
+    axes[0, 0].imshow(image[..., middle_z].T, **args)
     axes[0, 0].set_title("Axial")
-    # NOTE these slices are not oriented correctly :/
-    axes[0, 1].imshow(image[middle_y, :, : ].T, **args)
+    axes[0, 1].imshow(np.flip(image[middle_x, ...].T, 0), **args)
     axes[0, 1].set_title("Sagittal")
-    axes[0, 2].imshow(image[:, middle_x, :].T, **args)
+    axes[0, 2].imshow(np.flip(image[:, middle_y, :].T, 0), **args)
     axes[0, 2].set_title("Coronal")
 
     full_title = f"{tuple(image.shape)}, middle: {(middle_x, middle_y, middle_z)}"

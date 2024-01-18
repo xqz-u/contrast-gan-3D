@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Union
+from typing import Tuple, Union
 
 import h5py
 import numpy as np
@@ -94,46 +94,31 @@ def draw_sample_3D_world_fast(
 
 
 def extract_ostia_patch_3D(
-    ccta_h5_path: Union[str, Path],
+    image: np.ndarray,
+    meta: dict,
+    image_id: str,
     ostia_df: pd.DataFrame,
     patch_size: np.ndarray = constants.AORTIC_ROOT_PATCH_SIZE,
     patch_spacing: np.ndarray = constants.AORTIC_ROOT_PATCH_SPACING,
     is_cadrads: bool = False,
-):
-    image, meta, h5_file = io_utils.load_h5_image(ccta_h5_path, is_cadrads=is_cadrads)
-    image = image[::]  # NOTE to avoid `fast_trilinear` errors
+) -> Tuple[np.ndarray, np.ndarray]:
+    image = io_utils.ensure_HU_range(image)
 
-    logger.debug("Loaded '%s'", str(ccta_h5_path))
-
-    # ensure all scans are processed with the same dtype
-    # (this one makes sense with HU values)
-    dtype = image.dtype
-    if dtype != np.int16:
-        image = image.astype(np.int16)
-        logger.info("Changed dtype: %s -> %s", dtype, image.dtype)
-
-    # NOTE same intensity shift from the centerline extractor
-    if np.min(image) >= 0:
-        image -= 1024
-        logger.info("Subtracted 1024 to '%s'", str(ccta_h5_path))
-
-    ostia_id = io_utils.stem(ccta_h5_path)
     datapoint_key = "ID" if is_cadrads else "id"
-    ostia_rows = ostia_df[ostia_df[datapoint_key] == ostia_id]
+    ostia_rows = ostia_df[ostia_df[datapoint_key] == image_id]
     if len(ostia_rows) != 2:
         logger.debug(
-            "Something's off with '%s' ostia, shape: %s", ostia_id, ostia_rows.shape
+            "Something's off with '%s' ostia, shape: %s", image_id, ostia_rows.shape
         )
 
     coords_indexer = [f"{'ostium_' if is_cadrads else ''}{c}" for c in list("xyz")]
-    # NOTE the ostia must be in world coordinates
-    ostia_coords = ostia_rows[coords_indexer].values - meta["offset"]
-    sample = [
+    ostia_world_coords = ostia_rows[coords_indexer].values
+    ostia_coords = ostia_world_coords - meta["offset"]
+    ostia_patch_samples = [
         draw_sample_3D_world_fast(
             image, *coords, meta["spacing"], patch_size, patch_spacing
         )
         for coords in ostia_coords
     ]
 
-    h5_file.close()
-    return sample
+    return np.stack(ostia_patch_samples), ostia_world_coords

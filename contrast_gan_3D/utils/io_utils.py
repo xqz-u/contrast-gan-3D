@@ -6,6 +6,7 @@ import numpy as np
 import SimpleITK as sitk
 from monai.transforms import Orientation
 
+from contrast_gan_3D.constants import HU_MAX, HU_MIN
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
@@ -17,6 +18,20 @@ def basename(path: Union[str, Path]) -> str:
 
 def stem(path: Union[str, Path]) -> str:
     return basename(path).split(".")[0]
+
+
+# np.int16 range makes sense with HU values
+def ensure_HU_range(ct_scan: np.ndarray) -> np.ndarray:
+    ct_scan = ct_scan[::]
+    dtype = ct_scan.dtype
+    if dtype != np.int16:
+        ct_scan = ct_scan.astype(np.int16)
+        logger.debug(f"dtype conversion {dtype}->{ct_scan.dtype}")
+    if np.min(ct_scan) >= 0:
+        logger.debug(f"Subtracted {HU_MIN} from all positive CT")
+        ct_scan -= HU_MIN
+    logger.debug(f"Clipped to ({HU_MIN}, {HU_MAX})")
+    return np.clip(ct_scan, HU_MIN, HU_MAX)
 
 
 def load_ASOCA_annotated_centerlines(annotation_fname: Union[str, Path]) -> np.ndarray:
@@ -100,7 +115,6 @@ def load_mevis_coords(sourcefile: Union[Path, str]) -> Tuple[np.ndarray, np.ndar
     return points, vecs
 
 
-# NOTE no datatype conversion (int16) done here
 def sitk_to_h5(
     sitk_img_path: Union[str, Path],
     centerlines: Union[str, Path, np.ndarray],
@@ -119,6 +133,8 @@ def sitk_to_h5(
         out_dir.mkdir(parents=True, exist_ok=True)
 
     image, meta = load_sitk_image(sitk_img_path)
+
+    image = ensure_HU_range(image)
     if reorient_RPS:
         image = Orientation("RPS")(image[None, ...]).squeeze()
         logger.info("REORIENT RPS: '%s'", str(sitk_img_path))
@@ -145,8 +161,6 @@ def sitk_to_h5(
         dset = group.create_dataset("centerlines", data=centerlines)
         dset.attrs["ostia"] = ostia
 
-        dset = group.create_dataset(
-            "ccta", data=image, compression="lzf", dtype=np.int16
-        )
+        dset = group.create_dataset("ccta", data=image, compression="lzf")
         dset.attrs["spacing"] = meta["spacing"]
         dset.attrs["offset"] = meta["offset"]
