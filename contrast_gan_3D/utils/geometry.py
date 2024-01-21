@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Tuple, Union
 
 import h5py
@@ -100,18 +99,17 @@ def extract_ostia_patch_3D(
     ostia_df: pd.DataFrame,
     patch_size: np.ndarray = constants.AORTIC_ROOT_PATCH_SIZE,
     patch_spacing: np.ndarray = constants.AORTIC_ROOT_PATCH_SPACING,
-    is_cadrads: bool = False,
+    coords_prefix: str = "",
 ) -> Tuple[np.ndarray, np.ndarray]:
     image = io_utils.ensure_HU_range(image)
 
-    datapoint_key = "ID" if is_cadrads else "id"
-    ostia_rows = ostia_df[ostia_df[datapoint_key] == image_id]
+    ostia_rows = ostia_df[ostia_df["ID"] == image_id]
     if len(ostia_rows) != 2:
         logger.debug(
             "Something's off with '%s' ostia, shape: %s", image_id, ostia_rows.shape
         )
 
-    coords_indexer = [f"{'ostium_' if is_cadrads else ''}{c}" for c in list("xyz")]
+    coords_indexer = [f"{coords_prefix}{c}" for c in list("xyz")]
     ostia_world_coords = ostia_rows[coords_indexer].values
     ostia_coords = ostia_world_coords - meta["offset"]
     ostia_patch_samples = [

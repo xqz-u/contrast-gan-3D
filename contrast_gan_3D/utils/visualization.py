@@ -5,6 +5,7 @@ import h5py
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
+from scipy.stats import norm
 
 from contrast_gan_3D import config
 from contrast_gan_3D.constants import VMAX, VMIN
@@ -179,8 +180,8 @@ def plot_image_histogram(
     return axes
 
 
-def plot_ostia_patch(
-    ostia_patch: np.ndarray,
+def plot_ostium_patch(
+    ostium_patch: np.ndarray,
     coords: Union[Iterable[int], str] = "middle",
     axes: Optional[Union[np.ndarray, Axes]] = None,
     vmin: int = VMIN,
@@ -189,24 +190,25 @@ def plot_ostia_patch(
 ) -> np.ndarray:
     if isinstance(coords, str):
         assert coords == "middle"
-        x, y, z = np.array(ostia_patch.shape[1:]) // 2
+        x, y, z = np.array(ostium_patch.shape) // 2
     else:
         x, y, z = coords
 
     if axes is None:
-        _, axes = plt.subplots(2, 3, figsize=(10, 5))
+        _, axes = plt.subplots(1, 3, figsize=(7, 5))
+    axes = ensure_2D_axes(axes)
 
     if title is not None:
         axes[0, 0].get_figure().suptitle(title)
 
     kwargs = dict(zip(["vmin", "vmax", "cmap"], [vmin, vmax, "gray"]))
-    for i in range(2):
-        # axial
-        axes[i, 0].imshow(ostia_patch[i, ..., z], **kwargs)
-        # sagittal
-        axes[i, 1].imshow(ostia_patch[i, :, y, :], **kwargs)
-        # coronal
-        axes[i, 2].imshow(ostia_patch[i, x, ...], **kwargs)
+    # order: axial, sagittal, coronal
+    for ax, patch in zip(
+        axes.flat, [ostium_patch[..., z], ostium_patch[:, y, :], ostium_patch[x, ...]]
+    ):
+        ax.imshow(patch, **kwargs)
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
 
     return axes
 
@@ -240,5 +242,37 @@ def plot_mid_slice(
 
     if tight:
         plt.tight_layout()
+
+    return axes
+
+
+def plot_gmm_fitted_ostium_patch(
+    ostium_patch: np.ndarray,
+    mean: np.ndarray,
+    std: np.ndarray,
+    weights: np.ndarray,
+    n_components: int,
+    axes: Optional[np.ndarray] = None,
+    title: Optional[str] = None,
+    plot_ostia_kwargs: Optional[dict] = None,
+) -> np.ndarray:
+    if axes is None:
+        _, axes = plt.subplots(1, 4, figsize=(8, 5))
+
+    plot_ostia_kwargs = plot_ostia_kwargs or {}
+    plot_ostium_patch(ostium_patch, axes=axes[..., :-1], **plot_ostia_kwargs)
+
+    ax = axes.flat[-1]
+    if title is not None:
+        ax.set_title(title)
+
+    ax.hist(ostium_patch.reshape(-1, 1), density=True, color="black", bins=80)
+
+    x = np.arange(-300, 900, 10)  # HU range of interest
+    y = norm.pdf(x, mean, std) * weights
+    # total cumulative probability
+    ax.plot(x, y.sum(0), lw=3, c=f"C{n_components}", ls="dashed")
+    for i, yy in enumerate(y):
+        ax.plot(x, yy, lw=3, c=f"C{i}")
 
     return axes

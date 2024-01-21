@@ -24,7 +24,7 @@ def create_ostia_dataframe(
     ostia_df = []
     for i, name in zip(range(0, len(ostias), 2), datapoint_names):
         for j in [i, i + 1]:
-            ostia_df.append({"id": name} | dict(zip(list("xyz"), ostias[j])))
+            ostia_df.append({"ID": name} | dict(zip(list("xyz"), ostias[j])))
     ostia_df = pd.DataFrame(ostia_df)
 
     if ostia_sheet_savename is not None:
