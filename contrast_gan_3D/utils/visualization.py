@@ -3,13 +3,16 @@ from typing import Iterable, Optional, Tuple, Union
 
 import h5py
 import numpy as np
+import torch
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from scipy.stats import norm
 
 from contrast_gan_3D import config
+from contrast_gan_3D.alias import Array
 from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.utils import logging_utils
+from contrast_gan_3D.utils.array import grid_mask_to_cartesian_3D
 
 logger = logging_utils.create_logger(name=__name__)
 
@@ -29,10 +32,11 @@ def compute_grid_size(n: int) -> Tuple[int, int]:
 
 def plot_centerlines_3D(
     centerlines: np.ndarray,
-    title: str = "Centerlines",
     downsample_factor: int = 1,
     ax: Optional[Axes] = None,
+    title: Optional[str] = None,
     figsize: Tuple[int, int] = (10, 10),
+    **scatter_kwargs,
 ) -> Axes:
     assert centerlines.shape[1] == 3
 
@@ -43,9 +47,12 @@ def plot_centerlines_3D(
     assert ax.name == "3d", "Axis does not support 3D plotting"
 
     centerlines = centerlines[::downsample_factor]
-    ax.scatter(centerlines[:, 0], centerlines[:, 1], centerlines[:, 2])
+    ax.scatter(
+        centerlines[:, 0], centerlines[:, 1], centerlines[:, 2], **scatter_kwargs
+    )
 
-    ax.set_title(title)
+    if title is not None:
+        ax.set_title(title)
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
@@ -59,9 +66,8 @@ def plot_axial_slices(
     axes: Optional[Union[np.ndarray, Axes]] = None,
     tight: bool = True,
     title: Optional[str] = None,
-    figsize: Tuple[int, int] = (20, 15),
-    vmin: Optional[int] = None,
-    vmax: Optional[int] = None,
+    figsize: Tuple[int, int] = (10, 5),
+    **kwargs,
 ) -> np.ndarray:
     if len(slices.shape) < 2:
         slices = slices[..., None]
@@ -72,7 +78,7 @@ def plot_axial_slices(
 
     for i, ax in enumerate(axes.flat):
         if i < slices.shape[-1]:
-            ax.imshow(slices[..., i].T, cmap="gray", vmin=vmin, vmax=vmax)
+            ax.imshow(slices[..., i].T, cmap="gray", **kwargs)
             ax.get_xaxis().set_visible(False)
             ax.get_yaxis().set_visible(False)
         else:
@@ -97,9 +103,11 @@ def plot_axial_centerlines(
     title: Optional[str] = None,
     **kwargs,
 ) -> np.ndarray:
-    assert (
-        centerlines.dtype.kind == "i"
-    ), "Centerlines should be given in image coordinates"
+    if isinstance(centerlines, np.ndarray):
+        cond = centerlines.dtype.kind == "i"
+    else:
+        cond = not torch.is_floating_point(centerlines)
+    assert cond, "Centerlines should be given in image coordinates"
 
     if n is None:
         n = len(centerlines)
@@ -135,7 +143,7 @@ def plot_axial_centerlines(
         else:
             slice_ctls = unique_slices_ctls[slice_idx]
             ax.scatter(slice_ctls[:, 0], slice_ctls[:, 1], c="red", edgecolors="black")
-            ctls_coords = tuple(slice_ctls.flat) + (slice_idx,)
+            ctls_coords = tuple(slice_ctls.flat) + (int(slice_idx),)
             if len(ctls_coords) > 3:
                 # many centerlines on same slice: only give centerlines' z coord
                 ctls_coords = ctls_coords[-1]
@@ -206,7 +214,7 @@ def plot_ostium_patch(
     for ax, patch in zip(
         axes.flat, [ostium_patch[..., z], ostium_patch[:, y, :], ostium_patch[x, ...]]
     ):
-        ax.imshow(patch, **kwargs)
+        ax.imshow(patch.T, **kwargs)
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
 
@@ -274,5 +282,56 @@ def plot_gmm_fitted_ostium_patch(
     ax.plot(x, y.sum(0), lw=3, c=f"C{n_components}", ls="dashed")
     for i, yy in enumerate(y):
         ax.plot(x, yy, lw=3, c=f"C{i}")
+
+    return axes
+
+
+# NOTE possible improvement: draw a semi-transparent box for patch volume extent
+def plot_extracted_patch_3D(
+    centerlines_mask: Array,
+    patch_mask: Array,
+    extracted_patch: Array,
+    patch_center: Array,
+    figsize: Tuple[int, int] = (10, 5),
+    axes: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    if axes is None:
+        fig = plt.figure(figsize=figsize)
+        ax1 = fig.add_subplot(1, 2, 1, projection="3d")
+        ax2 = fig.add_subplot(1, 2, 2, projection="3d")
+    axes = ensure_2D_axes([ax1, ax2])
+
+    for i, ax in enumerate(axes.flat):
+        assert ax.name == "3d", f"Axis {i} does not support 3D plotting"
+
+    patch_plot_c = ("purple", 0.7)
+
+    plot_centerlines_3D(
+        grid_mask_to_cartesian_3D(centerlines_mask),
+        color=("C1", 0.1),
+        ax=ax1,
+        depthshade=False,
+    )
+    plot_centerlines_3D(
+        grid_mask_to_cartesian_3D(patch_mask),
+        color=patch_plot_c,
+        ax=ax1,
+        depthshade=False,
+    )
+    plot_centerlines_3D(
+        patch_center[None, ...],
+        color=("black", 1),
+        ax=ax1,
+        depthshade=False,
+    )
+    plot_centerlines_3D(
+        grid_mask_to_cartesian_3D(extracted_patch), ax=ax2, color=patch_plot_c
+    )
+    plot_centerlines_3D(
+        np.array([extracted_patch.shape]) // 2,
+        color=("black", 1),
+        ax=ax2,
+        depthshade=False,
+    )
 
     return axes

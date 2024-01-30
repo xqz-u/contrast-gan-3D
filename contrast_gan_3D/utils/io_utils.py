@@ -4,12 +4,22 @@ from typing import Dict, Optional, Tuple, Union
 import h5py
 import numpy as np
 import SimpleITK as sitk
+import torchio as tio
 from monai.transforms import Orientation
 
-from contrast_gan_3D.constants import HU_MAX, HU_MIN
+from contrast_gan_3D.constants import HU_MAX, HU_MIN, ORIENTATION
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
+
+
+def get_scan_orientation(img: Union[sitk.Image, Path]) -> str:
+    img = (
+        tio.ScalarImage.from_sitk(img)
+        if isinstance(img, sitk.Image)
+        else tio.ScalarImage(img)
+    )
+    return "".join(img.orientation)
 
 
 def basename(path: Union[str, Path]) -> str:
@@ -20,18 +30,20 @@ def stem(path: Union[str, Path]) -> str:
     return basename(path).split(".")[0]
 
 
-# np.int16 range makes sense with HU values
-def ensure_HU_range(ct_scan: np.ndarray) -> np.ndarray:
+def ensure_HU_intensities(ct_scan: np.ndarray) -> np.ndarray:
     ct_scan = ct_scan[::]
     dtype = ct_scan.dtype
     if dtype != np.int16:
         ct_scan = ct_scan.astype(np.int16)
         logger.debug(f"dtype conversion {dtype}->{ct_scan.dtype}")
-    if np.min(ct_scan) >= 0:
-        logger.debug(f"Subtracted {HU_MIN} from all positive CT")
-        ct_scan -= HU_MIN
+    og_min, og_max = ct_scan.min(), ct_scan.max()
+    if og_min >= 0:
+        ct_scan += HU_MIN
+        logger.debug(
+            f"HU shift: ({og_min, og_max}) -> ({ct_scan.min(), ct_scan.max()})"
+        )
     logger.debug(f"Clipped to ({HU_MIN}, {HU_MAX})")
-    return np.clip(ct_scan, HU_MIN, HU_MAX)
+    return ct_scan
 
 
 def load_ASOCA_annotated_centerlines(annotation_fname: Union[str, Path]) -> np.ndarray:
@@ -40,17 +52,29 @@ def load_ASOCA_annotated_centerlines(annotation_fname: Union[str, Path]) -> np.n
     return np.vstack(centerlines)
 
 
-# works both with .mhd and .nii.gz files
 def load_sitk_image(
-    image_path: Union[Path, str], swap: bool = True
-) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    image_path: Union[Path, str], target_orientation: str = ORIENTATION
+) -> Tuple[np.ndarray, Dict[str, Union[str, np.ndarray]]]:
+    image_path = Path(image_path)
     image = sitk.ReadImage(image_path)
-    spacing = image.GetSpacing()
-    offset = image.GetOrigin()
-    image = sitk.GetArrayFromImage(image)
-    if swap:
-        image = np.swapaxes(image, 0, 2)  # make channel-first
-    return image, {"spacing": np.array(spacing), "offset": np.array(offset)}
+    orientation = get_scan_orientation(image)
+    if orientation != target_orientation:
+        image = sitk.DICOMOrient(image, target_orientation)
+        new_orientation = get_scan_orientation(image)
+        logger.info(
+            "Changed orientation '%s': %s -> %s",
+            str(image_path),
+            orientation,
+            new_orientation,
+        )
+        orientation = new_orientation
+    spacing, offset = image.GetSpacing(), image.GetOrigin()
+    image = sitk.GetArrayFromImage(image).swapaxes(2, 0)  # make channel-first
+    return image, {
+        "spacing": np.array(spacing),
+        "offset": np.array(offset),
+        "orientation": orientation,
+    }
 
 
 # NOTE The HD5 file is returned to call .close() once done using it
@@ -69,6 +93,8 @@ def load_h5_image(
         "offset": np.array(image_ds.attrs["offset"]),
         "centerlines": centerlines,
     }
+    if (k := "orientation") in image_ds.attrs:
+        meta[k] = image_ds.attrs[k]
     if not is_cadrads and "ostia" in (
         ctls_attrs := content["ccta"]["centerlines"].attrs
     ):
@@ -76,19 +102,12 @@ def load_h5_image(
     return (image_ds, meta, content)
 
 
-def load_centerlines(folder_path: Union[str, Path], create: bool = True) -> np.ndarray:
+def load_centerlines(folder_path: Union[str, Path]) -> np.ndarray:
     folder_path = Path(folder_path)
 
     vessel_files = folder_path.glob("vessel[0-9]*.txt")
     centerlines = [np.loadtxt(v) for v in vessel_files]
-    centerlines = np.concatenate(centerlines or [[]], axis=0, dtype=np.float32)
-
-    if create and len(centerlines):
-        savepath = folder_path / "centerlines.npz"
-        np.savez_compressed(savepath, centerlines=centerlines)
-        logger.debug("Saved centerlines to '%s' with key 'centerlines'", str(savepath))
-
-    return centerlines
+    return np.concatenate(centerlines or [[]], axis=0, dtype=np.float32)
 
 
 # NOTE from Nils' code
@@ -119,25 +138,18 @@ def sitk_to_h5(
     sitk_img_path: Union[str, Path],
     centerlines: Union[str, Path, np.ndarray],
     ostia: Union[str, Path, np.ndarray],
-    reorient_RPS: bool = False,
     h5_output_dir: Optional[Union[str, Path]] = None,
-):
+    **kwargs,
+) -> Path:
     sitk_img_path = Path(sitk_img_path)
-    assert str(sitk_img_path).endswith(".mhd") or str(sitk_img_path).endswith(
-        ".nii.gz"
-    ), f"Usupported file extension for {str(sitk_img_path)!r}"
 
     out_dir = sitk_img_path.parent
     if h5_output_dir is not None:
         out_dir = Path(h5_output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    image, meta = load_sitk_image(sitk_img_path)
-
-    image = ensure_HU_range(image)
-    if reorient_RPS:
-        image = Orientation("RPS")(image[None, ...]).squeeze()
-        logger.info("REORIENT RPS: '%s'", str(sitk_img_path))
+    image, meta = load_sitk_image(sitk_img_path, **kwargs)
+    image = ensure_HU_intensities(image)
 
     if not isinstance(centerlines, np.ndarray):
         centerlines = load_centerlines(centerlines)
@@ -152,7 +164,7 @@ def sitk_to_h5(
     )
 
     # take care of filenames ending with multiple extensions, e.g. .nii.gz
-    outpath = (out_dir / f"{stem(sitk_img_path)}.h5").resolve()
+    outpath = (out_dir / Path(stem(sitk_img_path)).with_suffix(".h5")).resolve()
     logger.debug("H5 file: '%s'", str(outpath))
 
     with h5py.File(outpath, "w") as h5_file:
@@ -162,5 +174,5 @@ def sitk_to_h5(
         dset.attrs["ostia"] = ostia
 
         dset = group.create_dataset("ccta", data=image, compression="lzf")
-        dset.attrs["spacing"] = meta["spacing"]
-        dset.attrs["offset"] = meta["offset"]
+        dset.attrs.update(meta.items())
+    return outpath

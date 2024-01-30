@@ -7,3 +7,7 @@ HU_MIN, HU_MAX = -1024, 3072
 
 # level: 240, window: 1000
 VMIN, VMAX = -260, 740
+
+ORIENTATION = "LPS"
+
+MODEL_PATCH_SIZE = np.array((128,) * 3)

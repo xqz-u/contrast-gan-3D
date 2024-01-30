@@ -1,24 +1,27 @@
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import h5py
 import numpy as np
 import pandas as pd
+import torch
 
 from contrast_gan_3D import constants
-from contrast_gan_3D.utils import io_utils, logging_utils
+from contrast_gan_3D.alias import Array, Shape3D
+from contrast_gan_3D.utils import array, io_utils, logging_utils
 
 logger = logging_utils.create_logger(name=__name__)
 
 
-def check_3D_arrays(*arrays):
+def check_3D_arrays(*arrays: Tuple[Array]):
     assert all(el.shape[-1] == 3 for el in arrays)
 
 
-def world_to_image_coords(
-    world_coords: np.ndarray, offset: np.ndarray, spacing: np.ndarray
-) -> np.ndarray:
+def world_to_image_coords(world_coords: Array, offset: Array, spacing: Array) -> Array:
+    if isinstance(spacing, tuple):  # from torchio.Subject.spacing
+        spacing = torch.tensor(spacing)
     check_3D_arrays(world_coords, offset, spacing)
-    return ((world_coords - offset) / spacing).round().astype(int)
+    ret = ((world_coords - offset) / spacing).round()
+    return ret.astype(int) if isinstance(ret, np.ndarray) else ret.to(int)
 
 
 # NOTE previous codebase
@@ -101,7 +104,7 @@ def extract_ostia_patch_3D(
     patch_spacing: np.ndarray = constants.AORTIC_ROOT_PATCH_SPACING,
     coords_prefix: str = "",
 ) -> Tuple[np.ndarray, np.ndarray]:
-    image = io_utils.ensure_HU_range(image)
+    image = io_utils.ensure_HU_intensities(image)
 
     ostia_rows = ostia_df[ostia_df["ID"] == image_id]
     if len(ostia_rows) != 2:
@@ -120,3 +123,36 @@ def extract_ostia_patch_3D(
     ]
 
     return np.stack(ostia_patch_samples), ostia_world_coords
+
+
+# NOTE xyz is the center of the patch
+def extract_3D_patch(
+    img: Union[Array, h5py.Dataset], size: Shape3D, xyz: np.ndarray
+) -> Tuple[Array, Array]:
+    half = array.parse_patch_size(size, img.shape) // 2
+    bbox = np.dstack([xyz - half, xyz + half]).squeeze()
+    indexer = [slice(*box) for box in bbox]
+    # shape: `size`, possibly < `img.shape`
+    patch = img[*indexer]
+    # shape: `img.shape` - mask of extracted coordinates in original array
+    patch_mask = np.zeros_like(img)
+    patch_mask[*indexer] = patch
+
+    return patch, patch_mask
+
+
+def extract_random_3D_patch(
+    img: Union[Array, h5py.Dataset],
+    size: Shape3D,
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[Array, Array, np.ndarray]:
+    if rng is None:
+        rng = np.random.default_rng()
+    size = array.parse_patch_size(size, img.shape)
+    # xyz is the *center* of the extracted cube
+    xyz = [
+        rng.integers(extent, dim_high - extent + 1)
+        for dim_high, extent in zip(img.shape, size // 2)
+    ]
+    xyz = np.array(xyz)
+    return *extract_3D_patch(img, size, xyz), xyz
