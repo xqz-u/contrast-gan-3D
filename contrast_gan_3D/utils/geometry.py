@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import h5py
 import numpy as np
@@ -13,7 +13,12 @@ logger = logging_utils.create_logger(name=__name__)
 
 
 def check_3D_arrays(*arrays: Tuple[Array]):
-    assert all(el.shape[-1] == 3 for el in arrays)
+    for el in arrays:
+        assert el.shape[-1] == 3, el.shape
+
+
+def deg_to_radians(deg: float) -> float:
+    return deg * np.pi / 180
 
 
 def world_to_image_coords(world_coords: Array, offset: Array, spacing: Array) -> Array:
@@ -44,7 +49,6 @@ def fast_trilinear(
         arr[arr < 0] = 0
 
     x, y, z = x_indices - x0, y_indices - y0, z_indices - z0
-
     return (
         input_array[x0, y0, z0] * (1 - x) * (1 - y) * (1 - z)
         + input_array[x1, y0, z0] * x * (1 - y) * (1 - z)
@@ -104,7 +108,9 @@ def extract_ostia_patch_3D(
     patch_spacing: np.ndarray = constants.AORTIC_ROOT_PATCH_SPACING,
     coords_prefix: str = "",
 ) -> Tuple[np.ndarray, np.ndarray]:
-    image = io_utils.ensure_HU_intensities(image)
+    assert not isinstance(
+        image, h5py.Dataset
+    ), "Cannot use HD5 dataset here, convert to numpy array!"
 
     ostia_rows = ostia_df[ostia_df["ID"] == image_id]
     if len(ostia_rows) != 2:
@@ -125,34 +131,68 @@ def extract_ostia_patch_3D(
     return np.stack(ostia_patch_samples), ostia_world_coords
 
 
+def centered_3D_patch_indexer(
+    target_shape: Shape3D, source_shape: Shape3D, xyz: np.ndarray
+) -> List[slice]:
+    half = array.parse_patch_size(target_shape, source_shape) // 2
+    bbox = np.dstack([xyz - half, xyz + half]).squeeze()
+    return [slice(*box) for box in bbox]
+
+
 # NOTE xyz is the center of the patch
 def extract_3D_patch(
     img: Union[Array, h5py.Dataset], size: Shape3D, xyz: np.ndarray
-) -> Tuple[Array, Array]:
-    half = array.parse_patch_size(size, img.shape) // 2
-    bbox = np.dstack([xyz - half, xyz + half]).squeeze()
-    indexer = [slice(*box) for box in bbox]
+) -> Array:
     # shape: `size`, possibly < `img.shape`
-    patch = img[*indexer]
-    # shape: `img.shape` - mask of extracted coordinates in original array
-    patch_mask = np.zeros_like(img)
-    patch_mask[*indexer] = patch
-
-    return patch, patch_mask
+    return img[*centered_3D_patch_indexer(size, img.shape, xyz)]
 
 
 def extract_random_3D_patch(
     img: Union[Array, h5py.Dataset],
     size: Shape3D,
-    rng: Optional[np.random.Generator] = None,
-) -> Tuple[Array, Array, np.ndarray]:
+    rng: Optional[Union[np.random.Generator, np.random.RandomState]] = None,
+) -> Tuple[Array, np.ndarray]:
     if rng is None:
         rng = np.random.default_rng()
     size = array.parse_patch_size(size, img.shape)
     # xyz is the *center* of the extracted cube
+    sampler = rng.integers if isinstance(rng, np.random.Generator) else rng.randint
     xyz = [
-        rng.integers(extent, dim_high - extent + 1)
+        sampler(extent, dim_high - extent + 1)
         for dim_high, extent in zip(img.shape, size // 2)
     ]
     xyz = np.array(xyz)
-    return *extract_3D_patch(img, size, xyz), xyz
+    return extract_3D_patch(img, size, xyz), xyz
+
+
+# NOTE used for plotting
+def expand_3D_patch_whole_image(
+    patch: Array, img_shape: Shape3D, size: Shape3D, xyz: np.ndarray
+) -> Array:
+    # shape: `img.shape` - mask of extracted coordinates in original array
+    patch_mask = (np if isinstance(patch, np.ndarray) else torch).zeros(img_shape)
+    patch_mask[*centered_3D_patch_indexer(size, img_shape, xyz)] = patch
+    return patch_mask
+
+
+def world_to_grid_coords(
+    centerlines: np.ndarray,
+    offset: np.ndarray,
+    spacing: np.ndarray,
+    grid_shape: Shape3D,
+) -> np.ndarray:
+    centerlines_img_coords = world_to_image_coords(
+        centerlines[..., :3], offset, spacing
+    )
+    # NOTE many centerlines overlap once mapped to image coordinates
+    centerlines_img_coords = np.unique(centerlines_img_coords, axis=0)
+    centerlines_grid = np.zeros(grid_shape, dtype=np.uint8)
+    centerlines_grid[*[centerlines_img_coords[:, i] for i in range(3)]] = 1
+    return centerlines_grid
+
+
+def grid_to_cartesian_coords(grid_mask_3D: Array) -> Array:
+    cart_coords = np.dstack(np.where(grid_mask_3D)).squeeze()
+    if isinstance(grid_mask_3D, torch.Tensor):
+        cart_coords = torch.tensor(cart_coords)
+    return cart_coords

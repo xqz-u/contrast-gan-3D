@@ -11,8 +11,8 @@ from scipy.stats import norm
 from contrast_gan_3D import config
 from contrast_gan_3D.alias import Array
 from contrast_gan_3D.constants import VMAX, VMIN
+from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import logging_utils
-from contrast_gan_3D.utils.array import grid_mask_to_cartesian_3D
 
 logger = logging_utils.create_logger(name=__name__)
 
@@ -221,6 +221,7 @@ def plot_ostium_patch(
     return axes
 
 
+# NOTE works best with LPS orientation
 def plot_mid_slice(
     image: np.ndarray,
     axes: Optional[np.ndarray] = None,
@@ -286,12 +287,14 @@ def plot_gmm_fitted_ostium_patch(
     return axes
 
 
-# NOTE possible improvement: draw a semi-transparent box for patch volume extent
+# NOTE possible improvements:
+# - draw a semi-transparent box for patch volume extent
+# - use plotly
 def plot_extracted_patch_3D(
     centerlines_mask: Array,
-    patch_mask: Array,
     extracted_patch: Array,
     patch_center: Array,
+    ostia: Optional[Array] = None,
     figsize: Tuple[int, int] = (10, 5),
     axes: Optional[np.ndarray] = None,
 ) -> np.ndarray:
@@ -304,34 +307,46 @@ def plot_extracted_patch_3D(
     for i, ax in enumerate(axes.flat):
         assert ax.name == "3d", f"Axis {i} does not support 3D plotting"
 
-    patch_plot_c = ("purple", 0.7)
+    patch_plot_c = ("purple", 1)
+    point_s = 60
+
+    whole_image_patch_mask = geom.expand_3D_patch_whole_image(
+        extracted_patch, centerlines_mask.shape, extracted_patch.shape, patch_center
+    )
 
     plot_centerlines_3D(
-        grid_mask_to_cartesian_3D(centerlines_mask),
+        geom.grid_to_cartesian_coords(centerlines_mask),
         color=("C1", 0.1),
         ax=ax1,
         depthshade=False,
     )
     plot_centerlines_3D(
-        grid_mask_to_cartesian_3D(patch_mask),
+        geom.grid_to_cartesian_coords(whole_image_patch_mask),
         color=patch_plot_c,
         ax=ax1,
         depthshade=False,
     )
     plot_centerlines_3D(
-        patch_center[None, ...],
-        color=("black", 1),
-        ax=ax1,
-        depthshade=False,
+        patch_center[None, ...], color=("black", 1), ax=ax1, depthshade=False, s=point_s
     )
+    if ostia is not None:
+        # NOTE idky plotting both in one call only plots one ostium
+        for ostium in ostia:
+            plot_centerlines_3D(
+                ostium[None], color=patch_plot_c, ax=ax1, depthshade=False, s=point_s
+            )
+
     plot_centerlines_3D(
-        grid_mask_to_cartesian_3D(extracted_patch), ax=ax2, color=patch_plot_c
+        geom.grid_to_cartesian_coords(extracted_patch),
+        ax=ax2,
+        color=patch_plot_c,
     )
     plot_centerlines_3D(
         np.array([extracted_patch.shape]) // 2,
         color=("black", 1),
         ax=ax2,
         depthshade=False,
+        s=point_s,
     )
 
     return axes

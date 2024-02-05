@@ -5,9 +5,9 @@ import h5py
 import numpy as np
 import SimpleITK as sitk
 import torchio as tio
-from monai.transforms import Orientation
 
-from contrast_gan_3D.constants import HU_MAX, HU_MIN, ORIENTATION
+from contrast_gan_3D.constants import ORIENTATION
+from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
@@ -30,76 +30,10 @@ def stem(path: Union[str, Path]) -> str:
     return basename(path).split(".")[0]
 
 
-def ensure_HU_intensities(ct_scan: np.ndarray) -> np.ndarray:
-    ct_scan = ct_scan[::]
-    dtype = ct_scan.dtype
-    if dtype != np.int16:
-        ct_scan = ct_scan.astype(np.int16)
-        logger.debug(f"dtype conversion {dtype}->{ct_scan.dtype}")
-    og_min, og_max = ct_scan.min(), ct_scan.max()
-    if og_min >= 0:
-        ct_scan += HU_MIN
-        logger.debug(
-            f"HU shift: ({og_min, og_max}) -> ({ct_scan.min(), ct_scan.max()})"
-        )
-    logger.debug(f"Clipped to ({HU_MIN}, {HU_MAX})")
-    return ct_scan
-
-
 def load_ASOCA_annotated_centerlines(annotation_fname: Union[str, Path]) -> np.ndarray:
     with open(annotation_fname) as fd:
         centerlines = [list(map(float, line.strip().split()[1:])) for line in fd]
     return np.vstack(centerlines)
-
-
-def load_sitk_image(
-    image_path: Union[Path, str], target_orientation: str = ORIENTATION
-) -> Tuple[np.ndarray, Dict[str, Union[str, np.ndarray]]]:
-    image_path = Path(image_path)
-    image = sitk.ReadImage(image_path)
-    orientation = get_scan_orientation(image)
-    if orientation != target_orientation:
-        image = sitk.DICOMOrient(image, target_orientation)
-        new_orientation = get_scan_orientation(image)
-        logger.info(
-            "Changed orientation '%s': %s -> %s",
-            str(image_path),
-            orientation,
-            new_orientation,
-        )
-        orientation = new_orientation
-    spacing, offset = image.GetSpacing(), image.GetOrigin()
-    image = sitk.GetArrayFromImage(image).swapaxes(2, 0)  # make channel-first
-    return image, {
-        "spacing": np.array(spacing),
-        "offset": np.array(offset),
-        "orientation": orientation,
-    }
-
-
-# NOTE The HD5 file is returned to call .close() once done using it
-def load_h5_image(
-    image_path: Union[Path, str], is_cadrads: bool = False
-) -> Tuple[h5py.Dataset, Dict[str, np.ndarray], h5py.File]:
-    content = h5py.File(image_path)
-    image_ds = content["ccta"]["ccta"]
-    centerlines = (
-        np.array(image_ds.attrs["ctl_points"])
-        if is_cadrads
-        else content["ccta"]["centerlines"][::]
-    )
-    meta = {
-        "spacing": np.array(image_ds.attrs["spacing"]),
-        "offset": np.array(image_ds.attrs["offset"]),
-        "centerlines": centerlines,
-    }
-    if (k := "orientation") in image_ds.attrs:
-        meta[k] = image_ds.attrs[k]
-    if not is_cadrads and "ostia" in (
-        ctls_attrs := content["ccta"]["centerlines"].attrs
-    ):
-        meta["ostia"] = ctls_attrs["ostia"]
-    return (image_ds, meta, content)
 
 
 def load_centerlines(folder_path: Union[str, Path]) -> np.ndarray:
@@ -134,6 +68,41 @@ def load_mevis_coords(sourcefile: Union[Path, str]) -> Tuple[np.ndarray, np.ndar
     return points, vecs
 
 
+def load_sitk_image(
+    image_path: Union[Path, str], target_orientation: str = ORIENTATION
+) -> Tuple[np.ndarray, Dict[str, Union[str, np.ndarray]]]:
+    image_path = Path(image_path)
+    image = sitk.ReadImage(image_path)
+    orientation = get_scan_orientation(image)
+    if orientation != target_orientation:
+        image = sitk.DICOMOrient(image, target_orientation)
+        new_orientation = get_scan_orientation(image)
+        logger.info(
+            "Changed orientation '%s': %s -> %s",
+            str(image_path),
+            orientation,
+            new_orientation,
+        )
+        orientation = new_orientation
+    spacing, offset = image.GetSpacing(), image.GetOrigin()
+    image = sitk.GetArrayFromImage(image).swapaxes(2, 0)  # make channel-first
+    logger.debug(
+        "Original image dtype %s range (%s, %s)", image.dtype, image.min(), image.max()
+    )
+    image = image.astype(np.int16)
+    while image.min() >= 0:
+        image -= 1024
+    min_, max_ = image.min(), image.max()
+    logger.debug("New image dtype %s range (%d, %d)", image.dtype, min_, max_)
+    return image, {
+        "spacing": np.array(spacing),
+        "offset": np.array(offset),
+        "orientation": orientation,
+        "min": min_,
+        "max": max_,
+    }
+
+
 def sitk_to_h5(
     sitk_img_path: Union[str, Path],
     centerlines: Union[str, Path, np.ndarray],
@@ -149,12 +118,14 @@ def sitk_to_h5(
         out_dir.mkdir(parents=True, exist_ok=True)
 
     image, meta = load_sitk_image(sitk_img_path, **kwargs)
-    image = ensure_HU_intensities(image)
-
     if not isinstance(centerlines, np.ndarray):
         centerlines = load_centerlines(centerlines)
     if not isinstance(ostia, np.ndarray):
         ostia = load_mevis_coords(ostia)[0]
+
+    centerlines_seg = geom.world_to_grid_coords(
+        centerlines, meta["offset"], meta["spacing"], image.shape
+    )
 
     logger.debug(
         "CCTA: %s centerlines: %s ostia: %s",
@@ -170,9 +141,31 @@ def sitk_to_h5(
     with h5py.File(outpath, "w") as h5_file:
         group = h5_file.create_group("ccta")
 
-        dset = group.create_dataset("centerlines", data=centerlines)
-        dset.attrs["ostia"] = ostia
-
         dset = group.create_dataset("ccta", data=image, compression="lzf")
         dset.attrs.update(meta.items())
+
+        # coronary arteries centerlines and radii, world coordinates
+        dset = group.create_dataset("centerlines", data=centerlines, compression="lzf")
+        dset.attrs["ostia"] = ostia
+
+        group.create_dataset("centerlines_seg", data=centerlines_seg, compression="lzf")
+
     return outpath
+
+
+def hd5_group_attrs_flat(group: h5py.Group) -> dict:
+    return {
+        attr_name: attr
+        for dset in group.values()
+        for attr_name, attr in dset.attrs.items()
+    }
+
+
+# NOTE The HD5 file is returned to call .close() once done using it
+def load_h5_image(
+    image_path: Union[Path, str]
+) -> Tuple[h5py.Dataset, Dict[str, np.ndarray], h5py.File]:
+    f = h5py.File(image_path)
+    group = f["ccta"]
+    ccta = group["ccta"]
+    return (ccta, hd5_group_attrs_flat(group), f)
