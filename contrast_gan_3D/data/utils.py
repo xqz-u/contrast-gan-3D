@@ -6,7 +6,7 @@ import pandas as pd
 from batchgenerators.transforms.spatial_transforms import SpatialTransform_2
 
 from contrast_gan_3D.alias import Shape3D
-from contrast_gan_3D.constants import MODEL_PATCH_SIZE
+from contrast_gan_3D.constants import TRAIN_PATCH_SIZE
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import io_utils, logging_utils
 
@@ -64,7 +64,7 @@ def label_ccta_scan(
     return ret
 
 
-def make_train_transforms(patch_size: Shape3D = MODEL_PATCH_SIZE):
+def make_train_transforms(patch_size: Shape3D = TRAIN_PATCH_SIZE):
     # 3 augmentations, each with probability 0.1
     # proporiton of augmented samples in a batch: 1 - (1 - 0.1) ** 3 = 0.27
     return SpatialTransform_2(

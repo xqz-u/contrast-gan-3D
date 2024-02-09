@@ -8,4 +8,4 @@ VMIN, VMAX = -260, 740
 
 ORIENTATION = "LPS"
 
-MODEL_PATCH_SIZE = np.array((128,) * 3)
+TRAIN_PATCH_SIZE = np.array((128,) * 3)
