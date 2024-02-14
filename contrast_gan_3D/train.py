@@ -13,6 +13,8 @@ from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.trainer.Trainer import Trainer
 from contrast_gan_3D.trainer.utils import create_train_folds
 
+# TODO debug level argument on CLI
+
 
 # author: ChatGPT
 def overrides(config_path: Path):
@@ -44,6 +46,7 @@ def main(
         train_batch_size,
         val_batch_size,
         *dataset_paths,
+        max_HU_diff=max_HU_diff,
         train_transform=train_transform,
         seed=seed,
     )

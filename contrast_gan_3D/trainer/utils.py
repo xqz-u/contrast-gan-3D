@@ -48,9 +48,10 @@ def create_train_folds(
     train_batch_size: int,
     val_batch_size: int,
     *dataset_paths: Iterable[Union[str, Path]],
+    max_HU_diff: Optional[int] = None,
     train_transform: Optional[Callable[[dict], dict]] = None,
     seed: int = DEFAULT_SEED,
-    n_folds: int = 5
+    n_folds: int = 5,
 ) -> List[Tuple[Dict[int, Reloader]]]:
     train_folds, val_folds = crossval_paths(n_folds, *dataset_paths, seed=seed)
 
@@ -66,6 +67,7 @@ def create_train_folds(
                     paths,
                     [label] * len(paths),
                     train_patch_size,
+                    max_HU_diff=max_HU_diff,
                     rng=rng,
                     transform=train_transform,
                 ),
@@ -77,7 +79,13 @@ def create_train_folds(
         }
         val_fold = {
             label: Reloader(
-                CCTADataset(paths, [label] * len(paths), val_patch_size, rng=rng),
+                CCTADataset(
+                    paths,
+                    [label] * len(paths),
+                    val_patch_size,
+                    max_HU_diff=max_HU_diff,
+                    rng=rng,
+                ),
                 reload=False,
                 batch_size=val_batch_size,
                 shuffle=False,

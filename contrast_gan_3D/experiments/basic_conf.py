@@ -28,7 +28,8 @@ lr = 2e-4
 betas = (5e-1, 0.999)
 milestones = [3, 7]
 lr_gamma = 0.1
-HULoss_args = {"bias": -1024, "factor": 600, "min_HU": 350, "max_HU": 450}
+max_HU_diff = 600
+HULoss_args = {"HU_diff": max_HU_diff, "min_HU": 350, "max_HU": 450}
 
 generator_args = {
     "n_resnet_blocks": 6,
@@ -65,15 +66,15 @@ train_transform_args = {
     "p_el_per_sample": 0.1,
     # scaling
     "do_scale": True,
-    "scale": (0.75, 1.25),  # default
-    "p_scale_per_sample": 0.1,
+    "scale": (0.7, 1.4),  # default
+    "p_scale_per_sample": 0.2,
     # rotation
     "do_rotation": True,
     **{
-        f"angle_{ax}": (-geom.deg_to_radians(15), geom.deg_to_radians(15))
+        f"angle_{ax}": (-geom.deg_to_radians(30), geom.deg_to_radians(30))
         for ax in list("xyz")
     },
-    "p_rot_per_sample": 0.1,
+    "p_rot_per_sample": 0.2,
 }
 train_transform = SpatialTransform_2(**train_transform_args)
 
@@ -86,6 +87,7 @@ experiment_config = {
     "milestones": milestones,
     "lr_gamma": lr_gamma,
     "HULoss_args": HULoss_args,
+    "max_HU_diff": max_HU_diff,
     # ------------------------
     "generator": object_name(generator),
     "generator_optim": object_name(generator_optim),

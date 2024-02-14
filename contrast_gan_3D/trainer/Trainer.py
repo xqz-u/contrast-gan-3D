@@ -18,7 +18,7 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 logger = create_logger(name=__name__)
 
 
-# TODO proper augmentations
+# TODO clip logged images to right window --- dynamic
 # TODO models DataParallel
 # TODO inference: patches aggregation
 class Trainer:

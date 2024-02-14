@@ -40,15 +40,29 @@ class ZNCCLoss(nn.Module):
 
 
 class HULoss(nn.Module):
-    def __init__(self, bias: int, factor: int, min_HU: int, max_HU: int):
+    def __init__(self, HU_diff: int, min_HU: int, max_HU: int):
         super().__init__()
-        self.min = torch.tensor((min_HU + bias) / factor)
-        self.max = torch.tensor((max_HU + bias) / factor)
+        self.unscaled_min = min_HU
+        self.unscaled_max = max_HU
+        self.HU_diff = HU_diff
 
     def forward(self, source: Tensor, mask: torch.BoolTensor) -> Tensor:
-        input_masked = torch.masked_select(source, mask)
-        loss_min = torch.mean((torch.min(input_masked, self.min) - self.min) ** 2)
-        loss_max = torch.mean((torch.max(input_masked, self.max) - self.max) ** 2)
+        batch_source_flat = source.reshape(len(source), -1)
+        source_min = batch_source_flat.min(1)[0]
+        source_max = batch_source_flat.max(1)[0]
+
+        min_ = ((self.unscaled_min + source_min) / self.HU_diff)[:, None]
+        max_ = ((self.unscaled_max + source_max) / self.HU_diff)[:, None]
+
+        # NOTE would be better to mask first to do computations on smaller
+        # tensors, but then information on each tensor's min and max is lost
+        # (masking produces tensors of unequal sizes)
+        loss_min = (torch.min(batch_source_flat, min_) - min_).reshape(source.shape)
+        loss_min = torch.mean(loss_min[mask] ** 2)
+
+        loss_max = (torch.max(batch_source_flat, max_) - max_).reshape(source.shape)
+        loss_max = torch.mean(loss_max[mask] ** 2)
+
         return loss_min + loss_max
 
 
