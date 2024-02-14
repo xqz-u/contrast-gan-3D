@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 import numpy as np
 from torch.utils.data import Dataset
@@ -14,7 +14,7 @@ class CCTADataset(Dataset):
         hd5_paths: List[Union[Path, str]],
         labels: List[int],
         patch_size: Union[Shape3D, int],
-        transform: Optional[callable] = None,
+        transform: Optional[Callable[[dict], dict]] = None,
         rng: Optional[Union[np.random.RandomState, np.random.Generator]] = None,
     ):
         self.hd5_paths = hd5_paths

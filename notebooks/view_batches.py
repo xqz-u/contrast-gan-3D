@@ -9,7 +9,6 @@ from batchgenerators.dataloading.single_threaded_augmenter import \
 
 from contrast_gan_3D.constants import TRAIN_PATCH_SIZE
 from contrast_gan_3D.data import utils as dset_utils
-from contrast_gan_3D.data.CCTADataLoader import CCTADataLoader
 
 # from pathlib import Path
 #
@@ -95,13 +94,13 @@ cval_idx = 0
 # print(len(loaders["val"]._data))
 
 train_gen = GENERATOR_CLASS(
-    loaders["train"], dset_utils.make_train_transforms(TRAIN_PATCH_SIZE), *args
+    loaders["train"], dset_utils.make_train_transform(TRAIN_PATCH_SIZE), *args
 )
 # val_gen = GENERATOR_CLASS(loaders["val"], None, *args)
 
 label_counts = {}
 
-train_transform = dset_utils.make_train_transforms(TRAIN_PATCH_SIZE)
+train_transform = dset_utils.make_train_transform(TRAIN_PATCH_SIZE)
 for j, train_loader in enumerate(loaders["train"]):
     train_gen = SingleThreadedAugmenter(train_loader, train_transform)
     for i in range(100):

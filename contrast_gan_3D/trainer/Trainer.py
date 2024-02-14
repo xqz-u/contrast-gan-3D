@@ -1,21 +1,24 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
+from torchvision.utils import make_grid
 from tqdm.auto import trange
 
+import wandb
 from contrast_gan_3D.alias import ScanType
+from contrast_gan_3D.config import CHECKPOINTS_DIR
 from contrast_gan_3D.model.loss import HULoss, WassersteinLoss, ZNCCLoss
 from contrast_gan_3D.trainer.Reloader import Reloader
+from contrast_gan_3D.utils.logging_utils import create_logger
+
+logger = create_logger(name=__name__)
 
 
-# TODO check with batchviewer that patches are correct
 # TODO proper augmentations
-# TODO restart mechanism
-# TODO proper logging
-# TODO collection of injected attributes in a dict for experiment tracking
 # TODO models DataParallel
 # TODO inference: patches aggregation
 class Trainer:
@@ -26,18 +29,19 @@ class Trainer:
         generator_optim: Optimizer,
         discriminator_optim: Optimizer,
         train_generator_every: int,
+        run_id: str,
+        device: torch.device,
         generator_lr_scheduler: Optional[LRScheduler] = None,
         discriminator_lr_scheduler: Optional[LRScheduler] = None,
         hu_loss_weight: float = 1.0,
         sim_loss_weight: float = 1.0,
         gan_loss_weight: float = 1.0,
-        device_num: Optional[int] = None,
+        checkpoint_every: int = 1000,
+        rng: Optional[np.random.Generator] = None,
         **hu_loss_kwargs,
     ):
-        device_str = "cuda"
-        if device_num is not None:
-            device_str += f":{device_num}"
-        self.device = torch.device(device_str if torch.cuda.is_available() else "cpu")
+        self.device = device
+        self.rng = rng or np.random.default_rng()
 
         self.hu_loss_w = hu_loss_weight
         self.sim_loss_w = sim_loss_weight
@@ -47,20 +51,22 @@ class Trainer:
 
         self.generator = generator
         self.optimizer_G = generator_optim
-        if generator_lr_scheduler is not None:
-            self.scheduler_G = generator_lr_scheduler
+        self.lr_scheduler_G = generator_lr_scheduler
 
         self.discriminator = discriminator
         self.optimizer_D = discriminator_optim
-        if discriminator_lr_scheduler is not None:
-            self.scheduler_D = discriminator_lr_scheduler
+        self.lr_scheduler_D = discriminator_lr_scheduler
 
         self.loss_GAN = WassersteinLoss()
         self.loss_similarity = ZNCCLoss()
         self.loss_HU = HULoss(**hu_loss_kwargs)
 
-        self.start_iteration = 0
-        self.logger = None
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = CHECKPOINTS_DIR / f"{run_id}.pt"
+        self.checkpoint_path.parent.mkdir(exist_ok=True, parents=True)
+
+        self.iteration = 0
+        self.load_checkpoint()
 
     def train_step(
         self,
@@ -68,7 +74,7 @@ class Trainer:
         subopt: torch.Tensor,
         subopt_mask: torch.Tensor,
         iteration: int,
-    ) -> Dict[str, float]:
+    ) -> Tuple[Dict[str, float], torch.Tensor]:
         self.optimizer_D.zero_grad()
         # generate optimal image
         opt_hat = subopt - self.generator(subopt)
@@ -103,23 +109,26 @@ class Trainer:
 
         # update learning rate schedulers, if any
         for tag in list("GD"):
-            if (scheduler := getattr(self, f"scheduler_{tag}")) is not None:
+            if (scheduler := getattr(self, f"lr_scheduler_{tag}")) is not None:
                 scheduler.step()
 
-        return ret
+        return ret, opt_hat
 
     def fit(
         self,
         train_iterations: int,
+        validate_every: int,
         train_loaders: Dict[int, Reloader],
         val_loaders: Dict[int, Reloader],
     ):
         self.generator.to(self.device).train()
         self.discriminator.to(self.device).train()
 
-        # writer = SummaryWriter(log_dir=self.logs_dir)
+        logger.info("Using device: %s", self.device)
+        last_G_loss = None
 
-        for iteration in trange(self.start_iteration, train_iterations):
+        for iteration in (pbar := trange(self.iteration, train_iterations)):
+            pbar.set_description(f"Train iteration {iteration}")
             opt = next(train_loaders[ScanType.OPT.value])
             low = next(train_loaders[ScanType.LOW.value])
             high = next(train_loaders[ScanType.HIGH.value])
@@ -131,25 +140,45 @@ class Trainer:
             subopt = torch.cat([low["data"], high["data"]])
             subopt_mask = torch.cat([low["seg"], high["seg"]])
 
-            train_loss = self.train_step(opt["data"], subopt, subopt_mask, iteration)
+            train_loss, opt_hat = self.train_step(
+                opt["data"], subopt, subopt_mask, iteration
+            )
 
-            # if iteration % 100 == 0:
-            if iteration % 2 == 0:
-                self.log_loss(train_loss, iteration, "train")
-                # self.log_loss(writer, [loss_i, loss_a, loss_D], iteration, "train")
+            if "G" in train_loss:
+                last_G_loss = train_loss["G"]
+            pbar.set_postfix(**{"D": train_loss["D"], "G": last_G_loss})
 
-            # if iteration % 200 == 0:
-            if iteration % 2:
-                # self.log_images(writer, subopt, opt_hat, iteration, "images_train/fake")
-                # self.log_images(writer, opt, opt, iteration, "images_train/real")
-                self.log_loss(self.validate(val_loaders), iteration, "validation")
-                # self.log_loss(writer, [loss_i, loss_a, loss_D], iteration, "val")
+            self.log_loss(train_loss, iteration, "train")
 
-            if iteration % 1000 == 0:
-                ...
-                # self.save_train_state(iteration)
+            if iteration % validate_every == 0:
+                self.log_loss(
+                    self.validate(val_loaders, iteration), iteration, "validation"
+                )
+                # reconstruction and low/high should be logged with same indices
+                self.log_images(opt["data"], iteration, "train", ScanType.OPT.name)
+                self.log_images(
+                    low["data"],
+                    iteration,
+                    "train",
+                    ScanType.LOW.name,
+                    reconstructions=opt_hat[: len(low["data"])],
+                )
+                self.log_images(
+                    high["data"],
+                    iteration,
+                    "train",
+                    ScanType.HIGH.name,
+                    reconstructions=opt_hat[len(low["data"]) :],
+                )
 
-    def validate(self, val_loaders: Dict[int, Reloader]) -> Dict[str, float]:
+            if iteration % self.checkpoint_every == 0:
+                self.save_checkpoint(iteration)
+        # final checkpoint
+        self.save_checkpoint(train_iterations)
+
+    def validate(
+        self, val_loaders: Dict[int, Reloader], iteration: int
+    ) -> Dict[str, float]:
         self.discriminator.eval().to(self.device)
         self.generator.eval().to(self.device)
 
@@ -165,10 +194,9 @@ class Trainer:
                     if scan_type == ScanType.OPT:
                         loss_real -= self.loss_GAN(self.discriminator(sample))
                         if i == 0:
-                            ...
-                            # self.log_images(
-                            #     writer, batch, batch, iteration, scan_type.name
-                            # )
+                            self.log_images(
+                                sample, iteration, "validation", scan_type.name
+                            )
                     else:
                         sample_hat = sample - self.generator(sample)
                         adversarial_loss = self.loss_GAN(self.discriminator(sample_hat))
@@ -176,10 +204,13 @@ class Trainer:
                         loss_a -= adversarial_loss
                         loss_i += self.loss_similarity(sample_hat, sample)
                         if i == 0:
-                            ...
-                            # self.log_images(
-                            #     writer, batch, batch_hat, iteration, scan_type.name
-                            # )
+                            self.log_images(
+                                sample,
+                                iteration,
+                                "validation",
+                                scan_type.name,
+                                reconstructions=sample_hat,
+                            )
 
         n_opt = len(val_loaders[ScanType.OPT.value].dataset)
         n_low = len(val_loaders[ScanType.LOW.value].dataset)
@@ -187,8 +218,6 @@ class Trainer:
         n_subopt = n_low + n_high
 
         ret = {
-            "n_opt": n_opt,
-            "n_subopt": n_subopt,
             "D": (loss_real + loss_fake).mean(),
             "adversarial_real": loss_real / n_opt,
         }
@@ -203,9 +232,59 @@ class Trainer:
 
         return ret
 
+    @property
+    def model_torch_attrs(self) -> List[str]:
+        return [
+            "generator",
+            "optimizer_G",
+            "lr_scheduler_G",
+            "discriminator",
+            "optimizer_D",
+            "lr_scheduler_D",
+        ]
+
+    def save_checkpoint(self, iteration: int):
+        state = {"iteration": iteration}
+        for attr in self.model_torch_attrs:
+            el = getattr(self, attr, None)
+            state[attr] = el if el is None else el.state_dict()
+        torch.save(state, self.checkpoint_path)
+
+    def load_checkpoint(self):
+        if self.checkpoint_path.is_file():
+            logger.info("Resuming run from '%s'", str(self.checkpoint_path))
+            checkpoint = torch.load(
+                self.checkpoint_path, map_location=torch.device("cpu")
+            )
+            for k, v in checkpoint.items():
+                if k in self.model_torch_attrs:
+                    if v is not None:
+                        getattr(self, k).load_state_dict(v)
+                else:
+                    setattr(self, k, v)
+        logger.info("Starting from iteration %d", self.iteration)
+
     @staticmethod
     def log_loss(loss_dict: Dict[str, float], iteration: int, stage: str):
-        print(f"\033[1m{stage}\033[0m iteration", iteration, "loss:")
-        for k, v in loss_dict.items():
-            print(f"\t{k}: {v}")
-        print()
+        wandb.log({f"{stage}/{k}": v for k, v in loss_dict.items()}, step=iteration)
+
+    # do 12 slices 3x4 of a random sample in a batch
+    def log_images(
+        self,
+        batch: torch.Tensor,
+        iteration: int,
+        stage: str,
+        tag: str,
+        reconstructions: Optional[torch.Tensor] = None,
+    ):
+        sample_idx = self.rng.integers(len(batch))
+        sample = batch[sample_idx]
+        slice_idxs = sorted(self.rng.choice(sample.shape[-1], size=12, replace=False))
+        slices = sample.permute(3, 0, 2, 1)[slice_idxs]  # shapes: CWHD -> DCHW
+        images = wandb.Image(make_grid(slices, nrow=4))
+        wandb.log({f"{stage}/images/{tag}": images}, step=iteration)
+
+        if reconstructions is not None:
+            slices = reconstructions[sample_idx].permute(3, 0, 2, 1)[slice_idxs]
+            images = wandb.Image(make_grid(slices, nrow=4))
+            wandb.log({f"{stage}/images/{tag}_recon": images}, step=iteration)

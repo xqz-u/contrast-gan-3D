@@ -18,7 +18,7 @@ class ResnetGenerator(nn.Module):
     def __init__(
         self,
         n_resnet_blocks: int,
-        n_updown_sampling_blocks: int,
+        n_updownsample_blocks: int,
         n_feature_maps: int,
         resnet_dropout_prob: float = 0.0,
         resnet_padding_mode: str = "zeros",
@@ -35,7 +35,7 @@ class ResnetGenerator(nn.Module):
         model = [("first", ConvBlock3D(1, n_feature_maps, **first_and_last_common))]
 
         downsampling = []
-        for i in range(n_updown_sampling_blocks):
+        for i in range(n_updownsample_blocks):
             dim_in = n_feature_maps * 2**i
             dim_out = dim_in * 2
             downsampling.append(
@@ -54,7 +54,7 @@ class ResnetGenerator(nn.Module):
         model.append(("resnet", nn.Sequential(*resnet_blocks)))
 
         upsampling = []
-        for i in range(n_updown_sampling_blocks, 0, -1):
+        for i in range(n_updownsample_blocks, 0, -1):
             dim_in = n_feature_maps * 2**i
             dim_out = int(dim_in / 2)
             upsampling.append(

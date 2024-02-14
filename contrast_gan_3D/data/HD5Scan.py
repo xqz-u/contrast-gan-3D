@@ -5,7 +5,7 @@ import h5py
 import numpy as np
 
 from contrast_gan_3D.alias import Shape3D
-from contrast_gan_3D.config import DEFAULT_SEED
+from contrast_gan_3D.constants import DEFAULT_SEED
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import io_utils
 

@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from scipy.stats import norm
 
-from contrast_gan_3D import config
+from contrast_gan_3D import constants
 from contrast_gan_3D.alias import Array
 from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.utils import geometry as geom
@@ -120,7 +120,7 @@ def plot_axial_centerlines(
         chosen_ctls = centerlines
     else:
         if rng is None:
-            rng = np.random.default_rng(seed=config.DEFAULT_SEED)
+            rng = np.random.default_rng(seed=constants.DEFAULT_SEED)
         chosen_ctls = rng.choice(centerlines, n)
     chosen_ctls.sort(axis=0)
 

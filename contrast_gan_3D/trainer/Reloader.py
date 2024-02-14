@@ -1,7 +1,18 @@
+import torch
 from torch.utils.data import DataLoader
 
 from contrast_gan_3D.data.CCTADataset import CCTADataset
-from contrast_gan_3D.trainer import utils as train_utils
+
+
+# adds channel dimension and coneverts centerline masks to boolean
+def my_collate(batch: list) -> dict:
+    ret = {
+        k: torch.stack([torch.from_numpy(s.pop(k)) for s in batch])
+        .unsqueeze(1)
+        .to(dtype)
+        for k, dtype in zip(["data", "seg"], [torch.float32, torch.bool])
+    }
+    return ret | torch.utils.data.default_collate(batch)
 
 
 class Reloader:
@@ -9,7 +20,7 @@ class Reloader:
         self.dataset = dataset
         self.reload = reload
         dataloader_kwargs["collate_fn"] = dataloader_kwargs.get(
-            "collate_fn", train_utils.my_collate
+            "collate_fn", my_collate
         )
         self.dataloader = DataLoader(self.dataset, **dataloader_kwargs)
         self.dataloader_iterator = iter(self.dataloader)
