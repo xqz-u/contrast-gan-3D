@@ -1,5 +1,10 @@
-import importlib
 import os
+
+# https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+
+
+import importlib
 import sys
 from pathlib import Path
 from typing import Optional
@@ -8,12 +13,11 @@ import numpy as np
 from wandb.sdk.lib.runid import generate_id
 
 import wandb
+from contrast_gan_3D import utils
 from contrast_gan_3D.config import LOGS_DIR
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.trainer.Trainer import Trainer
 from contrast_gan_3D.trainer.utils import create_train_folds
-
-# TODO debug level argument on CLI
 
 
 # author: ChatGPT
@@ -40,6 +44,8 @@ def main(
     wandb_entity: str,
     run_id: Optional[str] = None,
 ):
+    utils.seed_everything(seed)
+
     folds = create_train_folds(
         train_patch_size,
         val_patch_size,
@@ -81,7 +87,7 @@ def main(
         rng=np.random.default_rng(seed),
         **HULoss_args,
     )
-    trainer.fit(train_iterations, validate_every, train_loaders, val_loaders)
+    trainer.fit(train_iterations, validate_every, log_every, train_loaders, val_loaders)
 
 
 if __name__ == "__main__":

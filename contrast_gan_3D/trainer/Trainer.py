@@ -2,7 +2,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torch import nn
+from torch import Tensor, nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torchvision.utils import make_grid
@@ -11,6 +11,7 @@ from tqdm.auto import trange
 import wandb
 from contrast_gan_3D.alias import ScanType
 from contrast_gan_3D.config import CHECKPOINTS_DIR
+from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.model.loss import HULoss, WassersteinLoss, ZNCCLoss
 from contrast_gan_3D.trainer.Reloader import Reloader
 from contrast_gan_3D.utils.logging_utils import create_logger
@@ -18,8 +19,7 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 logger = create_logger(name=__name__)
 
 
-# TODO clip logged images to right window --- dynamic
-# TODO models DataParallel
+# TODO models DDP
 # TODO inference: patches aggregation
 class Trainer:
     def __init__(
@@ -70,11 +70,12 @@ class Trainer:
 
     def train_step(
         self,
-        opt: torch.Tensor,
-        subopt: torch.Tensor,
-        subopt_mask: torch.Tensor,
+        opt: Tensor,
+        subopt: Tensor,
+        subopt_mask: Tensor,
+        subopt_min: Tensor,
         iteration: int,
-    ) -> Tuple[Dict[str, float], torch.Tensor]:
+    ) -> Tuple[Dict[str, float], Tensor]:
         self.optimizer_D.zero_grad()
         # generate optimal image
         opt_hat = subopt - self.generator(subopt)
@@ -93,7 +94,7 @@ class Trainer:
             # generator's individual loss components
             loss_a = -self.loss_GAN(self.discriminator(opt_hat))
             loss_i = self.loss_similarity(opt_hat, subopt)
-            loss_hu = self.loss_HU(opt_hat, subopt_mask)
+            loss_hu = self.loss_HU(opt_hat, subopt_mask, subopt_min)
             # full generator loss
             loss_G = self.gan_loss_w * loss_a + self.sim_loss_w * loss_i
             if not torch.isnan(loss_hu):
@@ -118,6 +119,7 @@ class Trainer:
         self,
         train_iterations: int,
         validate_every: int,
+        log_every: int,
         train_loaders: Dict[int, Reloader],
         val_loaders: Dict[int, Reloader],
     ):
@@ -129,47 +131,58 @@ class Trainer:
 
         for iteration in (pbar := trange(self.iteration, train_iterations)):
             pbar.set_description(f"Train iteration {iteration}")
-            opt = next(train_loaders[ScanType.OPT.value])
-            low = next(train_loaders[ScanType.LOW.value])
-            high = next(train_loaders[ScanType.HIGH.value])
+
+            opt, low, high = [
+                next(train_loaders[scan_type.value]) for scan_type in ScanType
+            ]
             # to GPU
             for el in [opt, low, high]:
                 for k in ["data", "seg"]:
                     el[k] = el[k].to(self.device)
 
+            mins = [el["meta"]["min"] for el in [opt, low, high]]
+
             subopt = torch.cat([low["data"], high["data"]])
             subopt_mask = torch.cat([low["seg"], high["seg"]])
+            subopt_min = torch.cat(mins[1:]).to(self.device)
 
             train_loss, opt_hat = self.train_step(
-                opt["data"], subopt, subopt_mask, iteration
+                opt["data"], subopt, subopt_mask, subopt_min, iteration
             )
 
             if "G" in train_loss:
                 last_G_loss = train_loss["G"]
             pbar.set_postfix(**{"D": train_loss["D"], "G": last_G_loss})
 
-            self.log_loss(train_loss, iteration, "train")
+            if iteration % log_every == 0:
+                self.log_loss(train_loss, iteration, "train")
+                # reconstruction and low/high should be logged with the same indices
+                for data, min_, recon, scan_type in zip(
+                    [opt, low, high],
+                    mins,
+                    [None, opt_hat[: len(low["data"])], opt_hat[len(low["data"]) :]],
+                    ScanType,
+                ):
+                    self.log_images(
+                        data["data"],
+                        min_,
+                        data["seg"],
+                        iteration,
+                        "train",
+                        scan_type.name,
+                        reconstructions=recon,
+                    )
+            # cleanup for GPU memory consumption
+            for el in train_loss.values():
+                del el
+            del train_loss
+            del opt_hat
 
             if iteration % validate_every == 0:
-                self.log_loss(
-                    self.validate(val_loaders, iteration), iteration, "validation"
-                )
-                # reconstruction and low/high should be logged with same indices
-                self.log_images(opt["data"], iteration, "train", ScanType.OPT.name)
-                self.log_images(
-                    low["data"],
-                    iteration,
-                    "train",
-                    ScanType.LOW.name,
-                    reconstructions=opt_hat[: len(low["data"])],
-                )
-                self.log_images(
-                    high["data"],
-                    iteration,
-                    "train",
-                    ScanType.HIGH.name,
-                    reconstructions=opt_hat[len(low["data"]) :],
-                )
+                val_loss = self.validate(val_loaders, iteration)
+                self.log_loss(val_loss, iteration, "validation")
+                for el in val_loss.values():
+                    del el
 
             if iteration % self.checkpoint_every == 0:
                 self.save_checkpoint(iteration)
@@ -191,26 +204,29 @@ class Trainer:
                 loader = val_loaders[scan_type.value]
                 for i, batch in enumerate(loader):
                     sample = batch["data"].to(self.device)
+                    min_ = batch["meta"]["min"]
+                    recon = None
+
                     if scan_type == ScanType.OPT:
                         loss_real -= self.loss_GAN(self.discriminator(sample))
-                        if i == 0:
-                            self.log_images(
-                                sample, iteration, "validation", scan_type.name
-                            )
                     else:
                         sample_hat = sample - self.generator(sample)
                         adversarial_loss = self.loss_GAN(self.discriminator(sample_hat))
                         loss_fake += adversarial_loss
                         loss_a -= adversarial_loss
                         loss_i += self.loss_similarity(sample_hat, sample)
-                        if i == 0:
-                            self.log_images(
-                                sample,
-                                iteration,
-                                "validation",
-                                scan_type.name,
-                                reconstructions=sample_hat,
-                            )
+                        recon = sample_hat
+
+                    if i == 0:
+                        self.log_images(
+                            sample,
+                            min_,
+                            batch["seg"],
+                            iteration,
+                            "validation",
+                            scan_type.name,
+                            reconstructions=recon,
+                        )
 
         n_opt = len(val_loaders[ScanType.OPT.value].dataset)
         n_low = len(val_loaders[ScanType.LOW.value].dataset)
@@ -268,23 +284,44 @@ class Trainer:
     def log_loss(loss_dict: Dict[str, float], iteration: int, stage: str):
         wandb.log({f"{stage}/{k}": v for k, v in loss_dict.items()}, step=iteration)
 
-    # do 12 slices 3x4 of a random sample in a batch
+    def _log_images_grid(
+        self,
+        sample: Tensor,
+        slice_idxs: Tensor,
+        tag: str,
+        iteration: int,
+        sample_min: Optional[Tensor] = None,
+    ) -> Tensor:
+        slices = sample.permute(3, 0, 2, 1)[slice_idxs]  # shapes: CWHD -> DCHW
+        if sample_min is not None:
+            slices = torch.clip(slices * self.loss_HU.HU_diff - sample_min, VMIN, VMAX)
+        else:  # plotting a boolean mask
+            slices = slices.to(torch.uint8)
+        images = wandb.Image(make_grid(slices, nrow=4))
+        wandb.log({tag: images}, step=iteration)
+
+    # log 12 slices 3x4 of a random sample in a batch
     def log_images(
         self,
-        batch: torch.Tensor,
+        batch: Tensor,
+        batch_min: Tensor,
+        masks: Tensor,
         iteration: int,
         stage: str,
         tag: str,
-        reconstructions: Optional[torch.Tensor] = None,
+        reconstructions: Optional[Tensor] = None,
     ):
         sample_idx = self.rng.integers(len(batch))
-        sample = batch[sample_idx]
+        sample, sample_min = batch[sample_idx], batch_min[sample_idx]
         slice_idxs = sorted(self.rng.choice(sample.shape[-1], size=12, replace=False))
-        slices = sample.permute(3, 0, 2, 1)[slice_idxs]  # shapes: CWHD -> DCHW
-        images = wandb.Image(make_grid(slices, nrow=4))
-        wandb.log({f"{stage}/images/{tag}": images}, step=iteration)
-
+        tag = f"{stage}/images/{tag}"
+        self._log_images_grid(sample, slice_idxs, tag, iteration, sample_min=sample_min)
+        self._log_images_grid(masks[sample_idx], slice_idxs, f"{tag}_mask", iteration)
         if reconstructions is not None:
-            slices = reconstructions[sample_idx].permute(3, 0, 2, 1)[slice_idxs]
-            images = wandb.Image(make_grid(slices, nrow=4))
-            wandb.log({f"{stage}/images/{tag}_recon": images}, step=iteration)
+            self._log_images_grid(
+                reconstructions[sample_idx],
+                slice_idxs,
+                f"{tag}_recon",
+                iteration,
+                sample_min=sample_min,
+            )

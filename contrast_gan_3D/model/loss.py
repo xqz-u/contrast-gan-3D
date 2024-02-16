@@ -46,21 +46,19 @@ class HULoss(nn.Module):
         self.unscaled_max = max_HU
         self.HU_diff = HU_diff
 
-    def forward(self, source: Tensor, mask: torch.BoolTensor) -> Tensor:
-        batch_source_flat = source.reshape(len(source), -1)
-        source_min = batch_source_flat.min(1)[0]
-        source_max = batch_source_flat.max(1)[0]
+    def forward(self, batch: Tensor, mask: torch.BoolTensor, scans_min: Tensor) -> Tensor:
+        batch_flat = batch.reshape(len(batch), -1)
 
-        min_ = ((self.unscaled_min + source_min) / self.HU_diff)[:, None]
-        max_ = ((self.unscaled_max + source_max) / self.HU_diff)[:, None]
+        min_ = ((self.unscaled_min + scans_min) / self.HU_diff)[:, None]
+        max_ = ((self.unscaled_max + scans_min) / self.HU_diff)[:, None]
 
-        # NOTE would be better to mask first to do computations on smaller
+        # NOTE would be nice to mask first to do computations on smaller
         # tensors, but then information on each tensor's min and max is lost
         # (masking produces tensors of unequal sizes)
-        loss_min = (torch.min(batch_source_flat, min_) - min_).reshape(source.shape)
+        loss_min = (torch.min(batch_flat, min_) - min_).reshape(batch.shape)
         loss_min = torch.mean(loss_min[mask] ** 2)
 
-        loss_max = (torch.max(batch_source_flat, max_) - max_).reshape(source.shape)
+        loss_max = (torch.max(batch_flat, max_) - max_).reshape(batch.shape)
         loss_max = torch.mean(loss_max[mask] ** 2)
 
         return loss_min + loss_max

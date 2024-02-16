@@ -16,13 +16,16 @@ def my_collate(batch: list) -> dict:
 
 
 class Reloader:
-    def __init__(self, dataset: CCTADataset, reload: bool = True, **dataloader_kwargs):
+    def __init__(self, dataset: CCTADataset, infinite: bool = True, **dataloader_kwargs):
         self.dataset = dataset
-        self.reload = reload
+        self.infinite = infinite
         dataloader_kwargs["collate_fn"] = dataloader_kwargs.get(
             "collate_fn", my_collate
         )
         self.dataloader = DataLoader(self.dataset, **dataloader_kwargs)
+        self.reset()
+
+    def reset(self):
         self.dataloader_iterator = iter(self.dataloader)
 
     def __iter__(self):
@@ -32,9 +35,12 @@ class Reloader:
         try:
             batch = next(self.dataloader_iterator)
         except StopIteration:
-            if self.reload:
-                self.dataloader_iterator = iter(self.dataloader)
+            self.reset()
+            if self.infinite:
                 batch = next(self.dataloader_iterator)
             else:
+                # raising allows to iterate over the whole dataloader, and
+                # still to reset it once it is exhausted (e.g. intermittent
+                # validation)
                 raise
         return batch

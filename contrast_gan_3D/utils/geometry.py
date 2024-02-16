@@ -135,6 +135,7 @@ def centered_3D_patch_indexer(
     target_shape: Shape3D, source_shape: Shape3D, xyz: np.ndarray
 ) -> List[slice]:
     half = array.parse_patch_size(target_shape, source_shape) // 2
+    target_shape = np.array(target_shape)
     bbox = np.dstack([xyz - half, xyz + half + target_shape % 2]).squeeze()
     return [slice(*box) for box in bbox]
 

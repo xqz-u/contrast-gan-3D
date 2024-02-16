@@ -7,7 +7,7 @@ import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
 from contrast_gan_3D.alias import Shape3D
-from contrast_gan_3D.constants import DEFAULT_SEED, TRAIN_PATCH_SIZE
+from contrast_gan_3D.constants import DEFAULT_SEED
 from contrast_gan_3D.data.CCTADataset import CCTADataset
 from contrast_gan_3D.trainer.Reloader import Reloader
 
@@ -71,7 +71,7 @@ def create_train_folds(
                     rng=rng,
                     transform=train_transform,
                 ),
-                reload=True,
+                infinite=True,
                 batch_size=train_batch_size,
                 shuffle=True,
             )
@@ -86,7 +86,7 @@ def create_train_folds(
                     max_HU_diff=max_HU_diff,
                     rng=rng,
                 ),
-                reload=False,
+                infinite=False,
                 batch_size=val_batch_size,
                 shuffle=False,
             )
