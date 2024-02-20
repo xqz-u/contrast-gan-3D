@@ -3,9 +3,6 @@ import os
 # https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
-
-import importlib
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -16,37 +13,19 @@ import wandb
 from contrast_gan_3D import utils
 from contrast_gan_3D.config import LOGS_DIR
 from contrast_gan_3D.experiments.basic_conf import *
+from contrast_gan_3D.trainer import utils as train_utils
 from contrast_gan_3D.trainer.Trainer import Trainer
-from contrast_gan_3D.trainer.utils import create_train_folds
-
-
-# author: ChatGPT
-def overrides(config_path: Path):
-    # Check if the path exists
-    if not os.path.exists(config_path):
-        print("Error: Config file does not exist.")
-        return
-
-    # Get the directory and file name from the path
-    config_dir, config_file = os.path.split(config_path)
-    config_name, _ = os.path.splitext(config_file)
-
-    # Add the directory to the sys.path if not already there
-    if config_dir not in sys.path:
-        sys.path.append(config_dir)
-
-    # Use importlib to load the module
-    return importlib.import_module(config_name)
 
 
 def main(
     wandb_project: str,
     wandb_entity: str,
     run_id: Optional[str] = None,
+    experiment_config: Optional[dict] = None,
 ):
     utils.seed_everything(seed)
 
-    folds = create_train_folds(
+    folds = train_utils.create_train_folds(
         train_patch_size,
         val_patch_size,
         train_batch_size,
@@ -92,6 +71,7 @@ def main(
 
 if __name__ == "__main__":
     import argparse
+    from pprint import pprint
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -115,7 +95,15 @@ if __name__ == "__main__":
     override_module = args.conf_overrides
     if override_module is not None:
         print(f"Reading overrides from {str(override_module)!r}")
-        override_module = overrides(override_module)
+        override_module = train_utils.global_overrides(override_module)
         globals().update(vars(override_module))
 
-    main(args.wandb_project, args.wandb_entity, run_id=args.wandb_run_id)
+    experiment_config = train_utils.update_experiment_config(globals())
+    pprint(experiment_config)
+
+    main(
+        args.wandb_project,
+        args.wandb_entity,
+        run_id=args.wandb_run_id,
+        experiment_config=experiment_config,
+    )

@@ -1,3 +1,6 @@
+import importlib
+import os
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
@@ -10,6 +13,7 @@ from contrast_gan_3D.alias import Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
 from contrast_gan_3D.data.CCTADataset import CCTADataset
 from contrast_gan_3D.trainer.Reloader import Reloader
+from contrast_gan_3D.utils import object_name
 
 
 def crossval_paths(
@@ -95,3 +99,62 @@ def create_train_folds(
         ret.append((train_fold, val_fold))
 
     return ret
+
+
+# author: ChatGPT
+def global_overrides(config_path: Path):
+    # Check if the path exists
+    if not os.path.exists(config_path):
+        print("Error: Config file does not exist.")
+        return
+
+    # Get the directory and file name from the path
+    config_dir, config_file = os.path.split(config_path)
+    config_name, _ = os.path.splitext(config_file)
+
+    # Add the directory to the sys.path if not already there
+    if config_dir not in sys.path:
+        sys.path.append(config_dir)
+
+    # Use importlib to load the module
+    return importlib.import_module(config_name)
+
+
+def update_experiment_config(vars: dict) -> dict:
+    return {
+        k: vars[k]
+        for k in [
+            "lr",
+            "betas",
+            "milestones",
+            "lr_gamma",
+            "HULoss_args",
+            "max_HU_diff",
+            "generator_args",
+            "discriminator_args",
+            "train_patch_size",
+            "train_batch_size",
+            "val_patch_size",
+            "val_batch_size",
+            "dataset_paths",
+            "train_transform_args",
+            "train_iterations",
+            "train_generator_every",
+            "seed",
+            "fold_idx",
+            "checkpoint_every",
+            "validate_every",
+            "log_every",
+        ]
+    } | {
+        k: object_name(vars[k])
+        for k in [
+            "generator",
+            "generator_optim",
+            "generator_lr_scheduler",
+            "discriminator",
+            "discriminator_optim",
+            "discriminator_lr_scheduler",
+            "train_transform",
+        ]
+    }

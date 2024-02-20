@@ -19,6 +19,8 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 logger = create_logger(name=__name__)
 
 
+# TODO improve GPU consumption, a lot of time is spent on CPU; maybe augment
+#      entire batch instead of single samples?
 # TODO models DDP
 # TODO inference: patches aggregation
 class Trainer:
