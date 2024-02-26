@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import torch
+
+# NOTE halts reproducibility, turn off afterwards
+torch.backends.cudnn.benchmark = True
+
 from wandb.sdk.lib.runid import generate_id
 
 import wandb
@@ -17,6 +22,7 @@ from contrast_gan_3D.trainer import utils as train_utils
 from contrast_gan_3D.trainer.Trainer import Trainer
 
 
+# TODO restore experiment configuration / run state fully from w&b when run is resumed
 def main(
     wandb_project: str,
     wandb_entity: str,
@@ -30,7 +36,9 @@ def main(
         val_patch_size,
         train_batch_size,
         val_batch_size,
+        device.type,
         *dataset_paths,
+        num_workers=num_workers,
         max_HU_diff=max_HU_diff,
         train_transform=train_transform,
         seed=seed,

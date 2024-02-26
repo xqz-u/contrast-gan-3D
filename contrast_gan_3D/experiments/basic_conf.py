@@ -4,14 +4,12 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
 
 from contrast_gan_3D.constants import DEFAULT_SEED, TRAIN_PATCH_SIZE
-from contrast_gan_3D.model.discriminator import NLayerDiscriminator
+from contrast_gan_3D.model.discriminator import PatchGAN
 from contrast_gan_3D.model.generator import ResnetGenerator
 from contrast_gan_3D.utils import geometry as geom
-from contrast_gan_3D.utils import object_name
 
 # NOTE **** change device number from here ****
-# drawback of instantiating everything outside Trainer. Could set
-# CUDA_VISIBLE_DEVICES read from cl, just needs to be done before importing torch
+# drawback of instantiating everything outside Trainer
 GPU = 1
 device = torch.device(f"cuda:{GPU}" if torch.cuda.is_available() else "cpu")
 
@@ -44,7 +42,7 @@ generator_lr_scheduler = MultiStepLR(
 )
 
 discriminator_args = {"discriminator_depth": 3, "n_feature_maps": 16}
-discriminator = NLayerDiscriminator(1, 1, **discriminator_args).to(device)
+discriminator = PatchGAN(1, 1, **discriminator_args).to(device)
 
 discriminator_optim = Adam(discriminator.parameters(), lr=lr, betas=betas)
 discriminator_lr_scheduler = MultiStepLR(
@@ -56,6 +54,7 @@ train_patch_size = TRAIN_PATCH_SIZE
 train_batch_size = 8
 val_patch_size = (256, 256, 128)
 val_batch_size = 2
+num_workers = (train_batch_size // 2, val_batch_size)  # (train,validation)
 dataset_paths = ["/home/marco/data/ostia_final.xlsx"]
 train_transform_args = {
     "patch_size": train_patch_size,

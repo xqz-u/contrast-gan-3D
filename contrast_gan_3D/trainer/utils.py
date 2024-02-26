@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
+from torch.utils.data import ConcatDataset
 
 from contrast_gan_3D.alias import Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
@@ -51,7 +52,9 @@ def create_train_folds(
     val_patch_size: Union[Shape3D, int],
     train_batch_size: int,
     val_batch_size: int,
+    device_type: str,
     *dataset_paths: Iterable[Union[str, Path]],
+    num_workers: Tuple[int, int] = (0, 0),
     max_HU_diff: Optional[int] = None,
     train_transform: Optional[Callable[[dict], dict]] = None,
     seed: int = DEFAULT_SEED,
@@ -75,9 +78,11 @@ def create_train_folds(
                     rng=rng,
                     transform=train_transform,
                 ),
+                device_type,
                 infinite=True,
                 batch_size=train_batch_size,
                 shuffle=True,
+                num_workers = num_workers[0]
             )
             for label, paths in train.items()
         }
@@ -90,9 +95,11 @@ def create_train_folds(
                     max_HU_diff=max_HU_diff,
                     rng=rng,
                 ),
+                device_type,
                 infinite=False,
                 batch_size=val_batch_size,
                 shuffle=False,
+                num_workers = num_workers[1]
             )
             for label, paths in val.items()
         }
@@ -145,6 +152,7 @@ def update_experiment_config(vars: dict) -> dict:
             "checkpoint_every",
             "validate_every",
             "log_every",
+            "num_workers"
         ]
     } | {
         k: object_name(vars[k])

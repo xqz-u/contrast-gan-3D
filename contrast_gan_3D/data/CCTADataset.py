@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Callable, List, Optional, Union
 
 import numpy as np
-import torch
 from torch.utils.data import Dataset
 
 from contrast_gan_3D.alias import Shape3D

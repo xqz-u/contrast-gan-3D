@@ -46,15 +46,14 @@ class HULoss(nn.Module):
         self.unscaled_max = max_HU
         self.HU_diff = HU_diff
 
-    def forward(self, batch: Tensor, mask: torch.BoolTensor, scans_min: Tensor) -> Tensor:
+    def forward(
+        self, batch: Tensor, mask: torch.BoolTensor, scans_min: Tensor
+    ) -> Tensor:
         batch_flat = batch.reshape(len(batch), -1)
 
         min_ = ((self.unscaled_min + scans_min) / self.HU_diff)[:, None]
         max_ = ((self.unscaled_max + scans_min) / self.HU_diff)[:, None]
 
-        # NOTE would be nice to mask first to do computations on smaller
-        # tensors, but then information on each tensor's min and max is lost
-        # (masking produces tensors of unequal sizes)
         loss_min = (torch.min(batch_flat, min_) - min_).reshape(batch.shape)
         loss_min = torch.mean(loss_min[mask] ** 2)
 
@@ -64,10 +63,12 @@ class HULoss(nn.Module):
         return loss_min + loss_max
 
 
+# NOTE this is not really a Wasserstein loss, it's adapted to be used with a
+# PatchGAN. *TODO* rewrite to avoid confusion
 class WassersteinLoss(nn.Module):
     @staticmethod
-    def forward(input: Tensor, target: Optional[Tensor] = None) -> Tensor:
-        ret = torch.mean(input)
-        if target is not None:
-            ret -= torch.mean(target)
+    def forward(fake: Tensor, real: Optional[Tensor] = None) -> Tensor:
+        ret = torch.mean(fake)
+        if real is not None:
+            ret -= torch.mean(real)
         return ret

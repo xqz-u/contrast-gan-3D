@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.profiler
 from torch import Tensor, nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -10,7 +11,7 @@ from tqdm.auto import trange
 
 import wandb
 from contrast_gan_3D.alias import ScanType
-from contrast_gan_3D.config import CHECKPOINTS_DIR
+from contrast_gan_3D.config import CHECKPOINTS_DIR, LOGS_DIR
 from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.model.loss import HULoss, WassersteinLoss, ZNCCLoss
 from contrast_gan_3D.trainer.Reloader import Reloader
@@ -21,8 +22,17 @@ logger = create_logger(name=__name__)
 
 # TODO improve GPU consumption, a lot of time is spent on CPU; maybe augment
 #      entire batch instead of single samples?
+
+# TODO plot offset masks during train/validation too, look at Roel's appendix plots
+
 # TODO models DDP
 # TODO inference: patches aggregation
+
+# TODO try gradient penalized Wasserstein loss instead of clipping network
+#      parameters
+
+
+# TODO reproducibility
 class Trainer:
     def __init__(
         self,
@@ -78,44 +88,48 @@ class Trainer:
         subopt_min: Tensor,
         iteration: int,
     ) -> Tuple[Dict[str, float], Tensor]:
-        self.optimizer_D.zero_grad()
+        self.optimizer_D.zero_grad(set_to_none=True)
         # generate optimal image
         opt_hat = subopt - self.generator(subopt)
-        # discriminator
-        loss_D = self.gan_loss_w * self.loss_GAN(
-            self.discriminator(opt_hat.detach()), self.discriminator(opt)
-        )
+
+        # ------------------ discriminator
+        D_x = self.discriminator(opt)
+        D_G_x = self.discriminator(opt_hat.detach())
+        loss_D = self.gan_loss_w * self.loss_GAN(D_G_x, D_x)
+
         loss_D.backward()
         self.optimizer_D.step()
         for p in self.discriminator.parameters():
             p.data.clamp_(-0.01, 0.01)
-        ret = {"D": loss_D.cpu().item()}
-        # generator
-        if iteration % self.train_generator_every == 0:
-            self.optimizer_G.zero_grad()
-            # generator's individual loss components
-            loss_a = -self.loss_GAN(self.discriminator(opt_hat))
-            loss_i = self.loss_similarity(opt_hat, subopt)
-            loss_hu = self.loss_HU(opt_hat, subopt_mask, subopt_min)
-            # full generator loss
-            loss_G = self.gan_loss_w * loss_a + self.sim_loss_w * loss_i
-            if not torch.isnan(loss_hu):
-                loss_G += self.hu_loss_w * loss_hu
-            loss_G.backward()
-            self.optimizer_G.step()
+        info = {"D": loss_D, "D_x": D_x.mean(), "D_G_x": D_G_x.mean()}
 
-            for k, v in zip(
-                ["G", "adversarial", "similarity", "HU"],
-                [loss_G, loss_a, loss_i, loss_hu],
-            ):
-                ret[k] = v.cpu().item()
+        # ------------------ generator
+        if iteration % self.train_generator_every == 0:
+            self.optimizer_G.zero_grad(set_to_none=True)
+
+            loss_G = self.gan_loss_w * -self.loss_GAN(self.discriminator(opt_hat))
+            loss_sim = self.sim_loss_w * self.loss_similarity(opt_hat, subopt)
+            loss_hu = self.loss_HU(opt_hat, subopt_mask, subopt_min)
+            if not torch.isnan(loss_hu):
+                loss_hu *= self.hu_loss_w
+            # full generator loss
+            full_loss_G = loss_G + loss_sim + loss_hu
+
+            full_loss_G.backward()
+            self.optimizer_G.step()
+            info.update(
+                zip(
+                    ["G_full", "G", "similarity", "HU"],
+                    [full_loss_G, loss_G, loss_sim, loss_hu],
+                )
+            )
 
         # update learning rate schedulers, if any
         for tag in list("GD"):
             if (scheduler := getattr(self, f"lr_scheduler_{tag}")) is not None:
                 scheduler.step()
 
-        return ret, opt_hat
+        return info, opt_hat
 
     def fit(
         self,
@@ -125,79 +139,95 @@ class Trainer:
         train_loaders: Dict[int, Reloader],
         val_loaders: Dict[int, Reloader],
     ):
-        self.generator.to(self.device).train()
-        self.discriminator.to(self.device).train()
+        self.generator.train()
+        self.discriminator.train()
 
         logger.info("Using device: %s", self.device)
         last_G_loss = None
 
-        for iteration in (pbar := trange(self.iteration, train_iterations)):
-            pbar.set_description(f"Train iteration {iteration}")
+        with torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            schedule=torch.profiler.schedule(skip_first=5, wait=2, warmup=3, active=10),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                LOGS_DIR / "profiler"
+            ),
+            profile_memory=True,
+            with_stack=True,
+        ) as prof:
+            for iteration in (pbar := trange(self.iteration, train_iterations)):
+                pbar.set_description(f"Train iteration {iteration}")
 
-            opt, low, high = [
-                next(train_loaders[scan_type.value]) for scan_type in ScanType
-            ]
-            # to GPU
-            for el in [opt, low, high]:
-                for k in ["data", "seg"]:
-                    el[k] = el[k].to(self.device)
+                if iteration + 1 >= 65:
+                    break
 
-            mins = [el["meta"]["min"] for el in [opt, low, high]]
+                prof.step()
 
-            subopt = torch.cat([low["data"], high["data"]])
-            subopt_mask = torch.cat([low["seg"], high["seg"]])
-            subopt_min = torch.cat(mins[1:]).to(self.device)
+                opt, low, high = [
+                    next(train_loaders[scan_type.value]) for scan_type in ScanType
+                ]
+                # to GPU
+                for el in [opt, low, high]:
+                    for k in ["data", "seg"]:
+                        el[k] = el[k].to(self.device, non_blocking=True)
 
-            train_loss, opt_hat = self.train_step(
-                opt["data"], subopt, subopt_mask, subopt_min, iteration
-            )
+                mins = [el["meta"]["min"] for el in [opt, low, high]]
 
-            if "G" in train_loss:
-                last_G_loss = train_loss["G"]
-            pbar.set_postfix(**{"D": train_loss["D"], "G": last_G_loss})
+                subopt = torch.cat([low["data"], high["data"]])
+                subopt_mask = torch.cat([low["seg"], high["seg"]])
+                subopt_min = torch.cat(mins[1:]).to(self.device)
 
-            if iteration % log_every == 0:
-                self.log_loss(train_loss, iteration, "train")
-                # reconstruction and low/high should be logged with the same indices
-                for data, min_, recon, scan_type in zip(
-                    [opt, low, high],
-                    mins,
-                    [None, opt_hat[: len(low["data"])], opt_hat[len(low["data"]) :]],
-                    ScanType,
-                ):
-                    self.log_images(
-                        data["data"],
-                        min_,
-                        data["seg"],
-                        iteration,
-                        "train",
-                        scan_type.name,
-                        reconstructions=recon,
-                    )
-            # cleanup for GPU memory consumption
-            for el in train_loss.values():
-                del el
-            del train_loss
-            del opt_hat
+                train_loss, opt_hat = self.train_step(
+                    opt["data"], subopt, subopt_mask, subopt_min, iteration
+                )
 
-            if iteration % validate_every == 0:
-                val_loss = self.validate(val_loaders, iteration)
-                self.log_loss(val_loss, iteration, "validation")
-                for el in val_loss.values():
+                last_G_loss = train_loss.get("G_full", last_G_loss)
+                pbar.set_postfix(D=train_loss["D"].item(), G_full=last_G_loss.item())
+
+                if iteration % log_every == 0:
+                    self.log_loss(train_loss, iteration, "train")
+                    # reconstruction and low/high should be logged with the same indices
+                    n_low = len(low["data"])
+                    for data, min_, scan_type, recon in zip(
+                        [opt, low, high],
+                        mins,
+                        ScanType,
+                        [None, opt_hat[:n_low], opt_hat[n_low:]],
+                    ):
+                        self.log_images(
+                            data["data"],
+                            min_,
+                            data["seg"],
+                            iteration,
+                            "train",
+                            scan_type.name,
+                            reconstructions=recon,
+                        )
+                # cleanup for GPU memory consumption
+                for el in train_loss.values():
                     del el
+                del train_loss, opt_hat
 
-            if iteration % self.checkpoint_every == 0:
-                self.save_checkpoint(iteration)
-        # final checkpoint
-        self.save_checkpoint(train_iterations)
+                if iteration % validate_every == 0:
+                    val_loss = self.validate(val_loaders, iteration)
+                    self.log_loss(val_loss, iteration, "validation")
+                    for el in val_loss.values():
+                        del el
+
+                if iteration % self.checkpoint_every == 0:
+                    self.save_checkpoint(iteration)
+            # final checkpoint
+            self.save_checkpoint(train_iterations)
 
     def validate(
         self, val_loaders: Dict[int, Reloader], iteration: int
     ) -> Dict[str, float]:
-        self.discriminator.eval().to(self.device)
-        self.generator.eval().to(self.device)
+        self.discriminator.eval()
+        self.generator.eval()
 
-        loss_i, loss_a, loss_real, loss_fake = torch.zeros(
+        loss_sim, loss_G, loss_real_D, loss_fake_D = torch.zeros(
             4, dtype=torch.float, device=self.device
         )
 
@@ -210,13 +240,13 @@ class Trainer:
                     recon = None
 
                     if scan_type == ScanType.OPT:
-                        loss_real -= self.loss_GAN(self.discriminator(sample))
+                        loss_real_D -= self.loss_GAN(self.discriminator(sample))
                     else:
                         sample_hat = sample - self.generator(sample)
-                        adversarial_loss = self.loss_GAN(self.discriminator(sample_hat))
-                        loss_fake += adversarial_loss
-                        loss_a -= adversarial_loss
-                        loss_i += self.loss_similarity(sample_hat, sample)
+                        batch_loss_G = self.loss_GAN(self.discriminator(sample_hat))
+                        loss_fake_D += batch_loss_G
+                        loss_G -= batch_loss_G
+                        loss_sim += self.loss_similarity(sample_hat, sample)
                         recon = sample_hat
 
                     if i == 0:
@@ -235,20 +265,19 @@ class Trainer:
         n_high = len(val_loaders[ScanType.HIGH.value].dataset)
         n_subopt = n_low + n_high
 
-        ret = {
-            "D": (loss_real + loss_fake).mean(),
-            "adversarial_real": loss_real / n_opt,
+        self.discriminator.train()
+        self.generator.train()
+
+        return {
+            "D": (loss_real_D + loss_fake_D).mean(),
+            "D_real": loss_real_D / n_opt,
+        } | {
+            k: v / n_subopt
+            for k, v in zip(
+                ["similarity", "D_fake", "G"],
+                [loss_sim, loss_fake_D, loss_G],
+            )
         }
-        for k, v in zip(
-            ["similarity", "adversarial_fake", "adversarial"],
-            [loss_i, loss_fake, loss_a],
-        ):
-            ret[k] = v.cpu().item() / n_subopt
-
-        self.discriminator = self.discriminator.train()
-        self.generator = self.generator.train()
-
-        return ret
 
     @property
     def model_torch_attrs(self) -> List[str]:
@@ -283,8 +312,10 @@ class Trainer:
         logger.info("Starting from iteration %d", self.iteration)
 
     @staticmethod
-    def log_loss(loss_dict: Dict[str, float], iteration: int, stage: str):
-        wandb.log({f"{stage}/{k}": v for k, v in loss_dict.items()}, step=iteration)
+    def log_loss(loss_dict: Dict[str, Tensor], iteration: int, stage: str):
+        wandb.log(
+            {f"{stage}/{k}": v for k, v in loss_dict.items()}, step=iteration
+        )
 
     def _log_images_grid(
         self,
