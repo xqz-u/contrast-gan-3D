@@ -85,7 +85,7 @@ def load_sitk_image(
         )
         orientation = new_orientation
     spacing, offset = image.GetSpacing(), image.GetOrigin()
-    image = sitk.GetArrayFromImage(image).swapaxes(2, 0)  # make channel-first
+    image = sitk.GetArrayFromImage(image).swapaxes(2, 0)  # DWH -> HWD
     logger.debug(
         "Original image dtype %s range (%s, %s)", image.dtype, image.min(), image.max()
     )

@@ -39,6 +39,7 @@ class ZNCCLoss(nn.Module):
         return -(cc / (std + 1e-8))
 
 
+# NOTE indexing requires GPU to CPU copy, would be better to apply & discard smh
 class HULoss(nn.Module):
     def __init__(self, HU_diff: int, min_HU: int, max_HU: int):
         super().__init__()

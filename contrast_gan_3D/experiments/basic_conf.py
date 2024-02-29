@@ -1,5 +1,7 @@
 import torch
+from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.spatial_transforms import SpatialTransform_2
+from batchgenerators.transforms.utility_transforms import NumpyToTensor
 from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
 
@@ -8,18 +10,21 @@ from contrast_gan_3D.model.discriminator import PatchGAN
 from contrast_gan_3D.model.generator import ResnetGenerator
 from contrast_gan_3D.utils import geometry as geom
 
-# NOTE **** change device number from here ****
-# drawback of instantiating everything outside Trainer
-GPU = 1
-device = torch.device(f"cuda:{GPU}" if torch.cuda.is_available() else "cpu")
+# **** NOTE **** change GPU index from here
+device_str = "cpu"
+if torch.cuda.is_available():
+    torch.cuda.set_device(1)
+    device_str = f"cuda:{torch.cuda.current_device()}"
+device = torch.device(device_str)
 
 train_iterations = int(1e4)
+val_iterations = 20
 train_generator_every = 5
 seed = DEFAULT_SEED
 fold_idx = 0
 checkpoint_every = int(1e3)
-validate_every = 200
-log_every = 20
+validate_every = 100
+log_every = 50
 
 # ------------ MODEL ------------
 lr = 2e-4
@@ -51,10 +56,10 @@ discriminator_lr_scheduler = MultiStepLR(
 
 # ------------ DATA ------------
 train_patch_size = TRAIN_PATCH_SIZE
-train_batch_size = 8
+train_batch_size = 6  # 12 subopt 6 opt
 val_patch_size = (256, 256, 128)
-val_batch_size = 2
-num_workers = (train_batch_size // 2, val_batch_size)  # (train,validation)
+val_batch_size = 3  # 6 subopt 3 opt
+num_workers = (12, 6)  # (train, validation)
 dataset_paths = ["/home/marco/data/ostia_final.xlsx"]
 train_transform_args = {
     "patch_size": train_patch_size,
@@ -75,4 +80,10 @@ train_transform_args = {
     },
     "p_rot_per_sample": 0.2,
 }
-train_transform = SpatialTransform_2(**train_transform_args)
+train_transform = Compose(
+    [
+        SpatialTransform_2(**train_transform_args),
+        NumpyToTensor(keys=["data"]),
+        NumpyToTensor(keys=["seg"], cast_to="bool"),
+    ]
+)

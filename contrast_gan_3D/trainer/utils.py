@@ -7,13 +7,16 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
+from batchgenerators.dataloading.nondet_multi_threaded_augmenter import (
+    NonDetMultiThreadedAugmenter,
+)
+from batchgenerators.transforms.abstract_transforms import Compose
+from batchgenerators.transforms.utility_transforms import NumpyToTensor
 from sklearn.model_selection import StratifiedKFold
-from torch.utils.data import ConcatDataset
 
-from contrast_gan_3D.alias import Shape3D
+from contrast_gan_3D.alias import BGenAugmenter, Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
-from contrast_gan_3D.data.CCTADataset import CCTADataset
-from contrast_gan_3D.trainer.Reloader import Reloader
+from contrast_gan_3D.data.CCTADataLoader3D import CCTADataLoader3D
 from contrast_gan_3D.utils import object_name
 
 
@@ -47,6 +50,7 @@ def divide_scans_in_fold(
     return ret
 
 
+# TODO tune num_cached and wait_time
 def create_train_folds(
     train_patch_size: Shape3D,
     val_patch_size: Union[Shape3D, int],
@@ -54,52 +58,58 @@ def create_train_folds(
     val_batch_size: int,
     device_type: str,
     *dataset_paths: Iterable[Union[str, Path]],
-    num_workers: Tuple[int, int] = (0, 0),
+    num_workers: Tuple[int, int] = (1, 1),
     max_HU_diff: Optional[int] = None,
     train_transform: Optional[Callable[[dict], dict]] = None,
     seed: int = DEFAULT_SEED,
     n_folds: int = 5,
-) -> List[Tuple[Dict[int, Reloader]]]:
+) -> List[Tuple[Dict[int, BGenAugmenter]]]:
     train_folds, val_folds = crossval_paths(n_folds, *dataset_paths, seed=seed)
-
     train_by_lab = [divide_scans_in_fold(f) for f in train_folds]
     val_by_lab = [divide_scans_in_fold(f) for f in val_folds]
 
-    rng, ret = np.random.default_rng(seed=seed), []
+    ret = []
     # every i'th entry is a train/val fold
     for train, val in zip(train_by_lab, val_by_lab):
         train_fold = {
-            label: Reloader(
-                CCTADataset(
+            label: NonDetMultiThreadedAugmenter(
+                CCTADataLoader3D(
                     paths,
-                    [label] * len(paths),
                     train_patch_size,
+                    train_batch_size,
                     max_HU_diff=max_HU_diff,
-                    rng=rng,
-                    transform=train_transform,
+                    infinite=True,
+                    shuffle=True,
+                    num_threads_in_multithreaded=num_workers[0],
+                    seed_for_shuffle=seed,
                 ),
-                device_type,
-                infinite=True,
-                batch_size=train_batch_size,
-                shuffle=True,
-                num_workers = num_workers[0]
+                train_transform,
+                num_workers[0],
+                pin_memory=device_type == "cuda",
             )
             for label, paths in train.items()
         }
         val_fold = {
-            label: Reloader(
-                CCTADataset(
+            label: NonDetMultiThreadedAugmenter(
+                CCTADataLoader3D(
                     paths,
-                    [label] * len(paths),
                     val_patch_size,
+                    val_batch_size,
                     max_HU_diff=max_HU_diff,
-                    rng=rng,
+                    infinite=True,
+                    return_incomplete=True,
+                    shuffle=True,
+                    num_threads_in_multithreaded=num_workers[1],
+                    seed_for_shuffle=seed,
                 ),
-                device_type,
-                infinite=False,
-                batch_size=val_batch_size,
-                shuffle=False,
-                num_workers = num_workers[1]
+                Compose(
+                    [
+                        NumpyToTensor(keys=["data"]),
+                        NumpyToTensor(keys=["seg"], cast_to="bool"),
+                    ]
+                ),
+                num_workers[1],
+                pin_memory=device_type == "cuda",
             )
             for label, paths in val.items()
         }
@@ -146,13 +156,14 @@ def update_experiment_config(vars: dict) -> dict:
             "dataset_paths",
             "train_transform_args",
             "train_iterations",
+            "val_iterations",
             "train_generator_every",
             "seed",
             "fold_idx",
             "checkpoint_every",
             "validate_every",
             "log_every",
-            "num_workers"
+            "num_workers",
         ]
     } | {
         k: object_name(vars[k])

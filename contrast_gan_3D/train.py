@@ -2,6 +2,7 @@ import os
 
 # https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+# os.environ["CUDA_VISIBLE_DEVICES"] = str(4)
 
 from pathlib import Path
 from typing import Optional
@@ -22,7 +23,6 @@ from contrast_gan_3D.trainer import utils as train_utils
 from contrast_gan_3D.trainer.Trainer import Trainer
 
 
-# TODO restore experiment configuration / run state fully from w&b when run is resumed
 def main(
     wandb_project: str,
     wandb_entity: str,
@@ -61,11 +61,16 @@ def main(
     )
 
     trainer = Trainer(
+        train_iterations,
+        val_iterations,
+        validate_every,
+        train_generator_every,
+        train_batch_size,
+        val_batch_size,
         generator,
         discriminator,
         generator_optim,
         discriminator_optim,
-        train_generator_every,
         run_id,
         generator_lr_scheduler=generator_lr_scheduler,
         discriminator_lr_scheduler=discriminator_lr_scheduler,
@@ -74,7 +79,7 @@ def main(
         rng=np.random.default_rng(seed),
         **HULoss_args,
     )
-    trainer.fit(train_iterations, validate_every, log_every, train_loaders, val_loaders)
+    trainer.fit(train_loaders, val_loaders, log_every)
 
 
 if __name__ == "__main__":

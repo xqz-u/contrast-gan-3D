@@ -62,27 +62,3 @@ def label_ccta_scan(
     ret.loc[ret["mu"] >= 500, "label"] = 1
     ret["label"] = ret["label"].astype("int8")
     return ret
-
-
-def make_train_transform(patch_size: Shape3D = TRAIN_PATCH_SIZE):
-    # 3 augmentations, each with probability 0.1
-    # proporiton of augmented samples in a batch: 1 - (1 - 0.1) ** 3 = 0.27
-    return SpatialTransform_2(
-        patch_size,
-        random_crop=False,
-        # deformation
-        do_elastic_deform=True,
-        deformation_scale=(0, 0.25),  # default
-        p_el_per_sample=0.1,
-        # scaling
-        do_scale=True,
-        scale=(0.75, 1.25),  # default
-        p_scale_per_sample=0.1,
-        # rotation
-        do_rotation=True,
-        **{
-            f"angle_{ax}": (-geom.deg_to_radians(15), geom.deg_to_radians(15))
-            for ax in list("xyz")
-        },
-        p_rot_per_sample=0.1,
-    )

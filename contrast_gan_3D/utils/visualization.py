@@ -60,7 +60,7 @@ def plot_centerlines_3D(
     return ax
 
 
-# NOTE assumes channel-last images
+# NOTE slices shape: WHD (yxz)
 def plot_axial_slices(
     slices: np.ndarray,
     axes: Optional[Union[np.ndarray, Axes]] = None,
@@ -221,7 +221,7 @@ def plot_ostium_patch(
     return axes
 
 
-# NOTE works best with LPS orientation
+# NOTE works best with LPS orientation. image: WHD
 def plot_mid_slice(
     image: np.ndarray,
     axes: Optional[np.ndarray] = None,
