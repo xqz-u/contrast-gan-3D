@@ -15,15 +15,16 @@ from contrast_gan_3D.constants import TRAIN_PATCH_SIZE
 from contrast_gan_3D.data.CCTADataLoader3D import CCTADataLoader3D
 from contrast_gan_3D.utils import geometry as geom
 
-sheet = pd.read_excel("/home/marco/data/ostia_final.xlsx")
-paths, labels = sheet["path"].values, sheet["label"].values
+# sheet = pd.read_excel("/home/marco/data/ostia_final.xlsx")
+# paths = sheet["path"].values
+paths = ["/home/marco/data/ASOCA_Philips/images/ASOCA-006.h5"]
 # paths, labels = (['/home/marco/data/ASOCA_Philips/images/ASOCA-002.h5'], [1])
 
 bs = 4
 # bs = 1
-ps = TRAIN_PATCH_SIZE
-# ps = (512, 512, 128)
-loader = CCTADataLoader3D(paths, ps, bs, shuffle=True, infinite=True, max_HU_diff=600)
+# ps = TRAIN_PATCH_SIZE
+ps = (512, 512, 128)
+loader = CCTADataLoader3D(paths, ps, bs, shuffle=True, infinite=True, max_HU_delta=600)
 
 train_transform_args = {
     "patch_size": ps,

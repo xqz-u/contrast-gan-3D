@@ -6,7 +6,7 @@ import numpy as np
 import SimpleITK as sitk
 import torchio as tio
 
-from contrast_gan_3D.constants import ORIENTATION
+from contrast_gan_3D.constants import MAX_HU, MIN_HU, ORIENTATION
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils.logging_utils import create_logger
 
@@ -38,7 +38,6 @@ def load_ASOCA_annotated_centerlines(annotation_fname: Union[str, Path]) -> np.n
 
 def load_centerlines(folder_path: Union[str, Path]) -> np.ndarray:
     folder_path = Path(folder_path)
-
     vessel_files = folder_path.glob("vessel[0-9]*.txt")
     centerlines = [np.loadtxt(v) for v in vessel_files]
     return np.concatenate(centerlines or [[]], axis=0, dtype=np.float32)
@@ -73,6 +72,7 @@ def load_sitk_image(
 ) -> Tuple[np.ndarray, Dict[str, Union[str, np.ndarray]]]:
     image_path = Path(image_path)
     image = sitk.ReadImage(image_path)
+
     orientation = get_scan_orientation(image)
     if orientation != target_orientation:
         image = sitk.DICOMOrient(image, target_orientation)
@@ -84,14 +84,20 @@ def load_sitk_image(
             new_orientation,
         )
         orientation = new_orientation
+
     spacing, offset = image.GetSpacing(), image.GetOrigin()
-    image = sitk.GetArrayFromImage(image).swapaxes(2, 0)  # DWH -> HWD
+    image = sitk.GetArrayFromImage(image).transpose(1, 2, 0)  # DHW -> HWD
     logger.debug(
         "Original image dtype %s range (%s, %s)", image.dtype, image.min(), image.max()
     )
+
     image = image.astype(np.int16)
-    while image.min() >= 0:
-        image -= 1024
+    # constrain the scan to lie in [MIN_HU, MAX_HU]
+    diff = image.min() - MIN_HU
+    if diff >= abs(MIN_HU):
+        image -= diff
+    image = image.clip(MIN_HU, MAX_HU)
+
     min_, max_ = image.min(), image.max()
     logger.debug("New image dtype %s range (%d, %d)", image.dtype, min_, max_)
     return image, {
@@ -117,7 +123,7 @@ def sitk_to_h5(
         out_dir = Path(h5_output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    image, meta = load_sitk_image(sitk_img_path, **kwargs)
+    image, meta = load_sitk_image(sitk_img_path, **kwargs)  # HWD
     if not isinstance(centerlines, np.ndarray):
         centerlines = load_centerlines(centerlines)
     if not isinstance(ostia, np.ndarray):
@@ -126,6 +132,8 @@ def sitk_to_h5(
     centerlines_seg = geom.world_to_grid_coords(
         centerlines, meta["offset"], meta["spacing"], image.shape
     )
+    # centerline extractor works with WHD oriented images, our convention is HWD
+    centerlines_seg = centerlines_seg.transpose(1, 0, 2)  # WHD -> HWD
 
     logger.debug(
         "CCTA: %s centerlines: %s ostia: %s",
@@ -134,7 +142,7 @@ def sitk_to_h5(
         ostia.shape,
     )
 
-    # take care of filenames ending with multiple extensions, e.g. .nii.gz
+    # take care of filenames ending with multiple extensions e.g. .nii.gz
     outpath = (out_dir / Path(stem(sitk_img_path)).with_suffix(".h5")).resolve()
     logger.debug("H5 file: '%s'", str(outpath))
 

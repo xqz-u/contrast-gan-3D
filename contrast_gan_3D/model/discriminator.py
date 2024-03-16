@@ -6,7 +6,7 @@ import torch.nn as nn
 from contrast_gan_3D.model.blocks import ConvBlock3D
 
 
-class PatchGAN(nn.Module):
+class PatchGANDiscriminator(nn.Module):
     def __init__(
         self,
         channels_in: int,

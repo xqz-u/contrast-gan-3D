@@ -60,13 +60,14 @@ def plot_centerlines_3D(
     return ax
 
 
-# NOTE slices shape: WHD (yxz)
+# NOTE `slices` shape: HWD (xyz)
 def plot_axial_slices(
     slices: np.ndarray,
     axes: Optional[Union[np.ndarray, Axes]] = None,
     tight: bool = True,
     title: Optional[str] = None,
     figsize: Tuple[int, int] = (10, 5),
+    cmap: Optional[str] = "gray",
     **kwargs,
 ) -> np.ndarray:
     if len(slices.shape) < 2:
@@ -78,7 +79,7 @@ def plot_axial_slices(
 
     for i, ax in enumerate(axes.flat):
         if i < slices.shape[-1]:
-            ax.imshow(slices[..., i].T, cmap="gray", **kwargs)
+            ax.imshow(slices[..., i], cmap=cmap, **kwargs)
             ax.get_xaxis().set_visible(False)
             ax.get_yaxis().set_visible(False)
         else:
@@ -112,9 +113,10 @@ def plot_axial_centerlines(
     if n is None:
         n = len(centerlines)
     assert n <= len(centerlines), f"Cannot plot {n}/{len(centerlines)} centerlines!"
-    if n > 1000:
-        logger.info(f"Reducing centerline sample size from {n} to 100")
-        n = 1000
+    n_lim = 1000
+    if n > n_lim:
+        logger.info(f"Reducing centerline sample size from {n} to {n_lim}")
+        n = n_lim
 
     if n == len(centerlines):
         chosen_ctls = centerlines
@@ -214,43 +216,38 @@ def plot_ostium_patch(
     for ax, patch in zip(
         axes.flat, [ostium_patch[..., z], ostium_patch[:, y, :], ostium_patch[x, ...]]
     ):
-        ax.imshow(patch.T, **kwargs)
+        ax.imshow(patch, **kwargs)
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
 
     return axes
 
 
-# NOTE works best with LPS orientation. image: WHD
+# NOTE works with LPS orientation. image: HWD
 def plot_mid_slice(
     image: np.ndarray,
     axes: Optional[np.ndarray] = None,
     title: Optional[str] = None,
-    tight: bool = True,
     vmin: int = VMIN,
     vmax: int = VMAX,
 ) -> np.ndarray:
     if axes is None:
         _, axes = plt.subplots(1, 3, figsize=(10, 5))
-    axes = ensure_2D_axes(axes)
 
     args = dict(zip(["cmap", "vmin", "vmax"], ["gray", vmin, vmax]))
-    middle_x, middle_y, middle_z = image.shape // np.array(2)
+    middle_y, middle_x, middle_z = image.shape // np.array(2)
 
-    axes[0, 0].imshow(image[..., middle_z].T, **args)
-    axes[0, 0].set_title("Axial")
-    axes[0, 1].imshow(np.flip(image[middle_x, ...].T, 0), **args)
-    axes[0, 1].set_title("Sagittal")
-    axes[0, 2].imshow(np.flip(image[:, middle_y, :].T, 0), **args)
-    axes[0, 2].set_title("Coronal")
+    axes[0].imshow(image[..., middle_z], **args)
+    axes[0].set_title("Axial")
+    axes[1].imshow(np.flip(image[:, middle_y, :].T, 0), **args)
+    axes[1].set_title("Sagittal")
+    axes[2].imshow(np.flip(image[middle_x, ...].T, 0), **args)
+    axes[2].set_title("Coronal")
 
     full_title = f"{tuple(image.shape)}, middle: {(middle_x, middle_y, middle_z)}"
     if title is not None:
         full_title = f"{title} {full_title}"
-    axes[0, 0].get_figure().suptitle(full_title)
-
-    if tight:
-        plt.tight_layout()
+    axes[0].get_figure().suptitle(full_title)
 
     return axes
 
@@ -289,7 +286,7 @@ def plot_gmm_fitted_ostium_patch(
 
 # NOTE possible improvements:
 # - draw a semi-transparent box for patch volume extent
-# - use plotly
+# - plotly
 def plot_extracted_patch_3D(
     centerlines_mask: Array,
     extracted_patch: Array,

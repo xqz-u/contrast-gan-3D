@@ -2,84 +2,115 @@ import os
 
 # https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-# os.environ["CUDA_VISIBLE_DEVICES"] = str(4)
 
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import torch
-
-# NOTE halts reproducibility, turn off afterwards
-torch.backends.cudnn.benchmark = True
-
 from wandb.sdk.lib.runid import generate_id
 
 import wandb
 from contrast_gan_3D import utils
 from contrast_gan_3D.config import LOGS_DIR
+from contrast_gan_3D.data.utils import (
+    MinMaxNormShift,
+    compute_dataset_mean,
+    minmax_norm,
+)
 from contrast_gan_3D.experiments.basic_conf import *
+from contrast_gan_3D.model.loss import HULoss
 from contrast_gan_3D.trainer import utils as train_utils
 from contrast_gan_3D.trainer.Trainer import Trainer
+from contrast_gan_3D.utils.logging_utils import create_logger
+
+logger = create_logger(name=__name__)
 
 
 def main(
     wandb_project: str,
     wandb_entity: str,
     run_id: Optional[str] = None,
+    profiler_dir: Optional[Path] = None,
     experiment_config: Optional[dict] = None,
 ):
-    utils.seed_everything(seed)
-
-    folds = train_utils.create_train_folds(
-        train_patch_size,
-        val_patch_size,
-        train_batch_size,
-        val_batch_size,
-        device.type,
-        *dataset_paths,
-        num_workers=num_workers,
-        max_HU_diff=max_HU_diff,
-        train_transform=train_transform,
-        seed=seed,
-    )
-    train_loaders, val_loaders = folds[fold_idx]
-
-    if run_id is not None:
-        print(f"Given run_id: {run_id!r}")
+    if seed is not None:
+        logger.info("Using seed %d", seed)
+        utils.seed_everything(seed)
     else:
-        run_id = generate_id()
-        print(f"New run_id: {run_id!r}")
+        # NOTE increase speed but halts reproducibility, turn off afterwards
+        logger.info("Set CUDNN in benchmark mode")
+        torch.backends.cudnn.benchmark = True
 
-    wandb.init(
-        id=run_id,
-        resume="allow",
-        project=wandb_project,
-        entity=wandb_entity,
-        dir=LOGS_DIR,
-        config=experiment_config,
-    )
+    train_folds, val_folds = train_utils.cval_paths(cval_folds, *dataset_paths)
 
-    trainer = Trainer(
-        train_iterations,
-        val_iterations,
-        validate_every,
-        train_generator_every,
-        train_batch_size,
-        val_batch_size,
-        generator,
-        discriminator,
-        generator_optim,
-        discriminator_optim,
-        run_id,
-        generator_lr_scheduler=generator_lr_scheduler,
-        discriminator_lr_scheduler=discriminator_lr_scheduler,
-        device=device,
-        checkpoint_every=checkpoint_every,
-        rng=np.random.default_rng(seed),
-        **HULoss_args,
-    )
-    trainer.fit(train_loaders, val_loaders, log_every)
+    for i, (train_fold, val_fold) in enumerate(zip(train_folds, val_folds)):
+        # data_mean = 0.24
+        logger.info(f"Computing train data mean for fold {i}")
+        train_data_mean = compute_dataset_mean(*[p for p, _ in train_fold])
+        logger.info(f"Train data mean: {train_data_mean:.3f}")
+
+        train_loaders, val_loaders = train_utils.create_dataloaders(
+            train_fold,
+            val_fold,
+            train_data_mean,
+            train_patch_size,
+            val_patch_size,
+            train_batch_size,
+            val_batch_size,
+            normalize_range=HU_normalize_range,
+            num_workers=num_workers,
+            train_transform=train_transform,
+            seed=seed,
+        )
+
+        HU_bounds = (
+            minmax_norm(desired_HU_bounds[0], HU_normalize_range) - train_data_mean,
+            minmax_norm(desired_HU_bounds[1], HU_normalize_range) - train_data_mean,
+        )
+
+        trainer = Trainer(
+            train_iterations,
+            val_iterations,
+            validate_every,
+            train_generator_every,
+            log_every,
+            log_images_every,
+            val_batch_size,
+            generator,
+            discriminator,
+            generator_optim,
+            discriminator_optim,
+            max_HU_delta,
+            # train_bantch_size * 2 = [low_batch, high_batch]
+            HULoss(*HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
+            MinMaxNormShift(*HU_normalize_range, train_data_mean),
+            run_id,
+            generator_lr_scheduler=generator_lr_scheduler,
+            discriminator_lr_scheduler=discriminator_lr_scheduler,
+            device=device,
+            checkpoint_every=checkpoint_every,
+            rng=np.random.default_rng(seed),
+            profiler_dir=profiler_dir,
+        )
+
+        if run_id is not None:
+            logger.info(f"OLD run_id: {run_id!r}")
+        else:
+            run_id = generate_id()
+            logger.info(f"NEW run_id: {run_id!r}")
+
+        wandb.init(
+            id=run_id,
+            resume="allow",
+            project=wandb_project,
+            entity=wandb_entity,
+            dir=LOGS_DIR,
+            config=experiment_config,
+        )
+
+        trainer.fit(train_loaders, val_loaders)
+        break
 
 
 if __name__ == "__main__":
@@ -103,11 +134,14 @@ if __name__ == "__main__":
         default=None,
         help="wandb run id used to resume logging a run.",
     )
+    parser.add_argument(
+        "--profiler-dir", type=Path, default=None, help="torch-tb-profiler logs dir."
+    )
     args = parser.parse_args()
 
     override_module = args.conf_overrides
     if override_module is not None:
-        print(f"Reading overrides from {str(override_module)!r}")
+        logger.info(f"Reading overrides from {str(override_module)!r}")
         override_module = train_utils.global_overrides(override_module)
         globals().update(vars(override_module))
 
@@ -118,5 +152,6 @@ if __name__ == "__main__":
         args.wandb_project,
         args.wandb_entity,
         run_id=args.wandb_run_id,
+        profiler_dir=args.profiler_dir,
         experiment_config=experiment_config,
     )

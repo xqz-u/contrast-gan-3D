@@ -5,12 +5,12 @@ from batchgenerators.transforms.utility_transforms import NumpyToTensor
 from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
 
-from contrast_gan_3D.constants import DEFAULT_SEED, TRAIN_PATCH_SIZE
-from contrast_gan_3D.model.discriminator import PatchGAN
+from contrast_gan_3D.constants import MAX_HU, MIN_HU, TRAIN_PATCH_SIZE, VAL_PATCH_SIZE
+from contrast_gan_3D.model.discriminator import PatchGANDiscriminator
 from contrast_gan_3D.model.generator import ResnetGenerator
 from contrast_gan_3D.utils import geometry as geom
 
-# **** NOTE **** change GPU index from here
+# **** NOTE **** change GPU index here
 device_str = "cpu"
 if torch.cuda.is_available():
     torch.cuda.set_device(1)
@@ -20,19 +20,23 @@ device = torch.device(device_str)
 train_iterations = int(1e4)
 val_iterations = 20
 train_generator_every = 5
-seed = DEFAULT_SEED
-fold_idx = 0
+# seed = DEFAULT_SEED
+seed = None
 checkpoint_every = int(1e3)
-validate_every = 100
+validate_every = 200
 log_every = 50
+log_images_every = 100
 
 # ------------ MODEL ------------
 lr = 2e-4
 betas = (5e-1, 0.999)
 milestones = list(map(int, [6e3, 8e3]))
 lr_gamma = 0.1
-max_HU_diff = 600
-HULoss_args = {"HU_diff": max_HU_diff, "min_HU": 350, "max_HU": 450}
+
+# HU loss
+max_HU_delta = 600
+desired_HU_bounds = (350, 450)
+HU_normalize_range = (MIN_HU, MAX_HU)
 
 generator_args = {
     "n_resnet_blocks": 6,
@@ -46,8 +50,13 @@ generator_lr_scheduler = MultiStepLR(
     generator_optim, milestones=milestones, gamma=lr_gamma
 )
 
-discriminator_args = {"discriminator_depth": 3, "n_feature_maps": 16}
-discriminator = PatchGAN(1, 1, **discriminator_args).to(device)
+discriminator_args = {
+    "channels_in": 1,
+    "channels_out": 1,
+    "discriminator_depth": 3,
+    "n_feature_maps": 16,
+}
+discriminator = PatchGANDiscriminator(**discriminator_args).to(device)
 
 discriminator_optim = Adam(discriminator.parameters(), lr=lr, betas=betas)
 discriminator_lr_scheduler = MultiStepLR(
@@ -55,11 +64,16 @@ discriminator_lr_scheduler = MultiStepLR(
 )
 
 # ------------ DATA ------------
+cval_folds = 5
+
 train_patch_size = TRAIN_PATCH_SIZE
 train_batch_size = 6  # 12 subopt 6 opt
-val_patch_size = (256, 256, 128)
+
+val_patch_size = VAL_PATCH_SIZE
 val_batch_size = 3  # 6 subopt 3 opt
-num_workers = (12, 6)  # (train, validation)
+
+num_workers = (train_batch_size * 2, val_batch_size * 2)  # (train, validation)
+
 dataset_paths = ["/home/marco/data/ostia_final.xlsx"]
 train_transform_args = {
     "patch_size": train_patch_size,

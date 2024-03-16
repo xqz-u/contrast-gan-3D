@@ -1,13 +1,16 @@
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
-from batchgenerators.transforms.spatial_transforms import SpatialTransform_2
+import SimpleITK as sitk
+import torch
+from torch import nn
+from tqdm.auto import tqdm
 
-from contrast_gan_3D.alias import Shape3D
-from contrast_gan_3D.constants import TRAIN_PATCH_SIZE
-from contrast_gan_3D.utils import geometry as geom
+from contrast_gan_3D.alias import Array
+from contrast_gan_3D.constants import MAX_HU, MIN_HU
+from contrast_gan_3D.data.HD5Scan import HD5Scan
 from contrast_gan_3D.utils import io_utils, logging_utils
 
 logger = logging_utils.create_logger(name=__name__)
@@ -62,3 +65,56 @@ def label_ccta_scan(
     ret.loc[ret["mu"] >= 500, "label"] = 1
     ret["label"] = ret["label"].astype("int8")
     return ret
+
+
+# NOTE if `value_range` is given, values in `x` outside of it should be clipped
+# either before or after normalization
+def minmax_norm(
+    x: Union[Array, float], value_range: Optional[Tuple[float, float]] = None
+):
+    if value_range is None:
+        assert isinstance(x, (np.ndarray, torch.Tensor))
+        value_range = (x.min(), x.max())
+    low, high = value_range
+    return (x - low) / max(high - low, 1e-5)
+
+
+# pack low, high, shift in one place that still uses autograd
+class MinMaxNormShift(nn.Module):
+    def __init__(self, low: float, high: float, shift: float):
+        super().__init__()
+        self.low, self.high, self.shift = low, high, shift
+
+    def forward(self, x: torch.Tensor):
+        return minmax_norm(x, (self.low, self.high)) - self.shift
+
+
+def minmax_denorm(
+    x: Union[Array, float], value_range: Optional[Tuple[float, float]] = None
+):
+    if value_range is None:
+        assert isinstance(x, (np.ndarray, torch.Tensor))
+        value_range = (x.min(), x.max())
+    low, high = value_range
+    return x * (high - low) + low
+
+
+# NOTE use only the train dataset mean, exclude test data! e.g. in cval loop
+def compute_dataset_mean(*ct_scan_paths: Iterable[Union[str, Path]]):
+    sum_, n_pix = 0, 0
+    for image_path in tqdm(ct_scan_paths):
+        image_path = Path(image_path)
+        if image_path.suffix == ".h5":
+            with HD5Scan(image_path) as scan:
+                image = scan.ccta[::]
+        else:
+            # same preprocessing used to create .h5 files, besides orientation adjustment
+            image = sitk.GetArrayFromImage(sitk.ReadImage(image_path)).astype(np.int16)
+            diff = image.min() - MIN_HU
+            if diff >= abs(MIN_HU):
+                image -= diff
+            image = np.clip(image, MIN_HU, MAX_HU)
+            # sum all voxel values
+        sum_ += image.sum()
+        n_pix += np.prod(image.shape)
+    return sum_ / n_pix

@@ -3,6 +3,9 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from torch import Tensor
+from torch.nn import functional as F
+
+from contrast_gan_3D.alias import Shape3D
 
 
 class StableStd(torch.autograd.Function):
@@ -39,33 +42,33 @@ class ZNCCLoss(nn.Module):
         return -(cc / (std + 1e-8))
 
 
-# NOTE indexing requires GPU to CPU copy, would be better to apply & discard smh
 class HULoss(nn.Module):
-    def __init__(self, HU_diff: int, min_HU: int, max_HU: int):
+    def __init__(
+        self: int,
+        min_HU_contstraint: float,
+        max_HU_constraint: float,
+        patch_size: Shape3D,
+    ):
         super().__init__()
-        self.unscaled_min = min_HU
-        self.unscaled_max = max_HU
-        self.HU_diff = HU_diff
+        device = "cpu"
+        if torch.cuda.is_available():
+            device = f"cuda:{torch.cuda.current_device()}"
+        device = torch.device(device)
+        self.min_HU = torch.full(
+            patch_size, min_HU_contstraint, dtype=torch.float32, device=device
+        )
+        self.max_HU = torch.full(
+            patch_size, max_HU_constraint, dtype=torch.float32, device=device
+        )
 
-    def forward(
-        self, batch: Tensor, mask: torch.BoolTensor, scans_min: Tensor
-    ) -> Tensor:
-        batch_flat = batch.reshape(len(batch), -1)
-
-        min_ = ((self.unscaled_min + scans_min) / self.HU_diff)[:, None]
-        max_ = ((self.unscaled_max + scans_min) / self.HU_diff)[:, None]
-
-        loss_min = (torch.min(batch_flat, min_) - min_).reshape(batch.shape)
-        loss_min = torch.mean(loss_min[mask] ** 2)
-
-        loss_max = (torch.max(batch_flat, max_) - max_).reshape(batch.shape)
-        loss_max = torch.mean(loss_max[mask] ** 2)
-
-        return loss_min + loss_max
+    def forward(self, batch: Tensor, mask: torch.BoolTensor) -> Tensor:
+        lb, ub = torch.minimum(batch, self.min_HU), torch.maximum(batch, self.max_HU)
+        loss_low = F.mse_loss(lb, self.min_HU, reduction="none")
+        loss_high = F.mse_loss(ub, self.max_HU, reduction="none")
+        loss = (loss_low + loss_high) * mask
+        return loss.sum() / mask.sum()  # MSE over unmasked voxels
 
 
-# NOTE this is not really a Wasserstein loss, it's adapted to be used with a
-# PatchGAN. *TODO* rewrite to avoid confusion
 class WassersteinLoss(nn.Module):
     @staticmethod
     def forward(fake: Tensor, real: Optional[Tensor] = None) -> Tensor:
