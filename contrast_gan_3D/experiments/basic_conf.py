@@ -17,8 +17,9 @@ if torch.cuda.is_available():
     device_str = f"cuda:{torch.cuda.current_device()}"
 device = torch.device(device_str)
 
-train_iterations = int(1e4)
-val_iterations = 20
+# train_iterations = int(1e4)
+train_iterations = int(6e3)
+val_iterations = 10
 train_generator_every = 5
 # seed = DEFAULT_SEED
 seed = None

@@ -69,6 +69,12 @@ def main(
             minmax_norm(desired_HU_bounds[1], HU_normalize_range) - train_data_mean,
         )
 
+        if run_id is None:
+            run_id = generate_id()
+            logger.info(f"NEW run_id: {run_id!r}")
+        else:
+            logger.info(f"OLD run_id: {run_id!r}")
+
         trainer = Trainer(
             train_iterations,
             val_iterations,
@@ -82,7 +88,7 @@ def main(
             generator_optim,
             discriminator_optim,
             max_HU_delta,
-            # train_bantch_size * 2 = [low_batch, high_batch]
+            # train_bantch_size * 2 == [low_batch, high_batch]
             HULoss(*HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
             MinMaxNormShift(*HU_normalize_range, train_data_mean),
             run_id,
@@ -93,12 +99,6 @@ def main(
             rng=np.random.default_rng(seed),
             profiler_dir=profiler_dir,
         )
-
-        if run_id is not None:
-            logger.info(f"OLD run_id: {run_id!r}")
-        else:
-            run_id = generate_id()
-            logger.info(f"NEW run_id: {run_id!r}")
 
         wandb.init(
             id=run_id,
