@@ -21,6 +21,7 @@ from contrast_gan_3D.data.utils import (
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.model.loss import HULoss
 from contrast_gan_3D.trainer import utils as train_utils
+from contrast_gan_3D.trainer.ImageLogger import ImageLogger
 from contrast_gan_3D.trainer.Trainer import Trainer
 from contrast_gan_3D.utils.logging_utils import create_logger
 
@@ -45,29 +46,33 @@ def main(
     train_folds, val_folds = train_utils.cval_paths(cval_folds, *dataset_paths)
 
     for i, (train_fold, val_fold) in enumerate(zip(train_folds, val_folds)):
-        # data_mean = 0.24
-        logger.info(f"Computing train data mean for fold {i}")
-        train_data_mean = compute_dataset_mean(*[p for p, _ in train_fold])
-        logger.info(f"Train data mean: {train_data_mean:.3f}")
+        logger.info("Computing train data mean for fold %d", i)
+        train_mean = compute_dataset_mean(*[p for p, _ in train_fold])
+        norm_train_mean = minmax_norm(train_mean, HU_norm_range)
+        logger.info(
+            "Train data mean: %.3f normalized %s: %.3f",
+            train_mean,
+            HU_norm_range,
+            norm_train_mean,
+        )
 
         train_loaders, val_loaders = train_utils.create_dataloaders(
             train_fold,
             val_fold,
-            train_data_mean,
             train_patch_size,
             val_patch_size,
             train_batch_size,
             val_batch_size,
-            normalize_range=HU_normalize_range,
+            HU_norm_range,
+            norm_train_mean,
             num_workers=num_workers,
             train_transform=train_transform,
             seed=seed,
         )
 
-        HU_bounds = (
-            minmax_norm(desired_HU_bounds[0], HU_normalize_range) - train_data_mean,
-            minmax_norm(desired_HU_bounds[1], HU_normalize_range) - train_data_mean,
-        )
+        scaled_HU_bounds = [
+            minmax_norm(x, HU_norm_range) - norm_train_mean for x in desired_HU_bounds
+        ]
 
         if run_id is None:
             run_id = generate_id()
@@ -88,15 +93,15 @@ def main(
             generator_optim,
             discriminator_optim,
             max_HU_delta,
-            # train_bantch_size * 2 == [low_batch, high_batch]
-            HULoss(*HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
-            MinMaxNormShift(*HU_normalize_range, train_data_mean),
+            # train_bantch_size * 2 == [low batch, high batch]
+            HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
+            MinMaxNormShift(*HU_norm_range, norm_train_mean),
+            ImageLogger(HU_norm_range, train_mean, rng=np.random.default_rng(seed)),
             run_id,
             generator_lr_scheduler=generator_lr_scheduler,
             discriminator_lr_scheduler=discriminator_lr_scheduler,
             device=device,
             checkpoint_every=checkpoint_every,
-            rng=np.random.default_rng(seed),
             profiler_dir=profiler_dir,
         )
 

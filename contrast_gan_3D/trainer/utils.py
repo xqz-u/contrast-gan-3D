@@ -16,7 +16,7 @@ from batchgenerators.transforms.utility_transforms import NumpyToTensor
 from sklearn.model_selection import StratifiedKFold
 
 from contrast_gan_3D.alias import BGenAugmenter, Shape3D
-from contrast_gan_3D.constants import DEFAULT_SEED, MAX_HU, MIN_HU
+from contrast_gan_3D.constants import DEFAULT_SEED
 from contrast_gan_3D.data.CCTADataLoader3D import CCTADataLoader3D
 from contrast_gan_3D.utils import object_name
 
@@ -54,12 +54,12 @@ def divide_scans_in_fold(
 def create_dataloaders(
     train_fold: List[Tuple[str, int]],
     val_fold: List[Tuple[str, int]],
-    train_mean: float,
     train_patch_size: Shape3D,
     val_patch_size: Union[Shape3D, int],
     train_batch_size: int,
     val_batch_size: int,
-    normalize_range: Optional[Tuple[int, int]] = (MIN_HU, MAX_HU),
+    normalize_range: Tuple[int, int],
+    train_mean: float,
     num_workers: Tuple[int, int] = (1, 1),
     train_transform: Optional[Callable[[dict], dict]] = None,
     seed: int = DEFAULT_SEED,
@@ -143,7 +143,7 @@ def update_experiment_config(vars: dict) -> dict:
                 "lr_gamma",
                 "max_HU_delta",
                 "desired_HU_bounds",
-                "HU_normalize_range",
+                "HU_norm_range",
                 "generator_args",
                 "discriminator_args",
                 "train_patch_size",

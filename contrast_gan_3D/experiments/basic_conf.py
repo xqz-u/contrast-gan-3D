@@ -37,7 +37,7 @@ lr_gamma = 0.1
 # HU loss
 max_HU_delta = 600
 desired_HU_bounds = (350, 450)
-HU_normalize_range = (MIN_HU, MAX_HU)
+HU_norm_range = (MIN_HU, MAX_HU)
 
 generator_args = {
     "n_resnet_blocks": 6,
