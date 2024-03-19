@@ -47,10 +47,10 @@ class ImageLogger:
         sample_idx = indexer[0]
         grid_args = {"normalize": True, "value_range": (VMIN, VMAX)}
         fig, caption = None, names[sample_idx]
-        caption_cp = caption
+        workspace, caption_cp = f"{stage}/images/{scan_type}", caption
 
+        # show centerlines by scattering manually during training
         if stage == "train":
-            # show centerlines by scattering manually
             ctls = masks[indexer].permute(3, 0, 1, 2).to(torch.float16)
             ctls_grid = make_grid(ctls)
             # DHW -> HWD (yxz)
@@ -65,61 +65,38 @@ class ImageLogger:
             caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
 
         slices = scans[indexer] * self.norm_denominator + self.shift
-        workspace = f"{stage}/images/{scan_type}"
-        self.log_wandb_image(
-            slices.cpu(),
-            f"{workspace}/sample",
-            it,
-            fig=fig,
-            caption=caption_cp,
-            **grid_args,
-        )
+        fig = ImageLogger.create_grid_figure(slices.cpu(), fig, **grid_args)
+        self.log_wandb_image(f"{workspace}/sample", it, fig, caption=caption_cp)
+
         if reconstructions is not None:
             recon = reconstructions[indexer] * self.norm_denominator
+            fig = ImageLogger.create_grid_figure(recon.cpu(), **grid_args)
             self.log_wandb_image(
-                recon.cpu(),
-                f"{workspace}/reconstruction",
-                it,
-                caption=caption,
-                **grid_args,
-            )
-        if attenuations is not None:
-            # normalize [-1, 1]->[0, 1] for colormap (min and max from entire sample)
-            attn_sample = attenuations[sample_idx]
-            low, high = attn_sample.min().item(), attn_sample.max().item()
-            attn = minmax_norm(attenuations[indexer], (low, high))
-            # https://discuss.pytorch.org/t/torch-utils-make-grid-with-cmaps/107471/2
-            attn = np.apply_along_axis(
-                self.cmap, 0, attn.detach().cpu().numpy()
-            ).squeeze()
-            # add colorbar
-            fig, ax = plt.subplots(figsize=self.figsize)
-            norm = colors.Normalize(low, high)
-            mappable = cm.ScalarMappable(norm=norm, cmap=self.cmap)
-            cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
-            cbar.set_ticks(np.linspace(low, high, 5))
-            self.log_wandb_image(
-                attn, f"{workspace}/attenuation", it, fig=fig, caption=caption
+                f"{workspace}/reconstruction", it, fig, caption=caption
             )
 
-    def log_wandb_image(
-        self,
-        slices: Tensor,
-        tag: str,
-        it: int,
-        fig: Optional[Figure] = None,
-        caption: Optional[str] = None,
-        **grid_args,
-    ):
-        fig = self.create_grid_figure(slices, fig, **grid_args)
-        wandb.log({tag: wandb.Image(fig, caption=caption)}, step=it)
-        # im = wandb.Image(fig)
-        # im.image.show()
-        plt.close(fig)
+        if attenuations is not None:
+            fig = self.create_attenuation_grid(attenuations, indexer)
+            self.log_wandb_image(f"{workspace}/attenuation", it, fig, caption=caption)
+
+    def create_attenuation_grid(self, attenuations: Tensor, indexer: list):
+        # normalize [-1, 1]->[0, 1] for colormap (min and max from entire sample)
+        attn_sample = attenuations[indexer[0]]
+        low, high = attn_sample.min().item(), attn_sample.max().item()
+        attn = minmax_norm(attenuations[indexer], (low, high))
+        # https://discuss.pytorch.org/t/torch-utils-make-grid-with-cmaps/107471/2
+        attn = np.apply_along_axis(self.cmap, 0, attn.detach().cpu().numpy()).squeeze()
+        # add colorbar
+        fig, ax = plt.subplots(figsize=self.figsize)
+        norm = colors.Normalize(low, high)
+        mappable = cm.ScalarMappable(norm=norm, cmap=self.cmap)
+        cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
+        cbar.set_ticks(np.linspace(low, high, 5))
+        return ImageLogger.create_grid_figure(attn, fig)
 
     @staticmethod
     def create_grid_figure(
-        slices: Union[Tensor, np.ndarray], fig: Optional[Figure], **grid_args
+        slices: Union[Tensor, np.ndarray], fig: Optional[Figure] = None, **grid_args
     ) -> Figure:
         if isinstance(slices, np.ndarray):
             slices = torch.from_numpy(slices)
@@ -133,3 +110,13 @@ class ImageLogger:
         ax.set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
         fig.tight_layout()
         return fig
+
+    def log_wandb_image(
+        self,
+        tag: str,
+        it: int,
+        fig: Figure,
+        caption: Optional[str] = None,
+    ):
+        wandb.log({tag: wandb.Image(fig, caption=caption)}, step=it)
+        plt.close(fig)
