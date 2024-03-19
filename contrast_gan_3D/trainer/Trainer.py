@@ -1,31 +1,28 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-import numpy as np
 import torch
 from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAugmenter
 from batchgenerators.dataloading.nondet_multi_threaded_augmenter import (
     NonDetMultiThreadedAugmenter,
 )
-from matplotlib import cm, colors, figure
-from matplotlib import pyplot as plt
 from torch import Tensor, nn, profiler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
-from torchvision.utils import make_grid
 from tqdm.auto import trange
 
 import wandb
 from contrast_gan_3D.alias import BGenAugmenter, ScanType
 from contrast_gan_3D.config import CHECKPOINTS_DIR
-from contrast_gan_3D.constants import VMAX, VMIN
-from contrast_gan_3D.data.utils import MinMaxNormShift, minmax_denorm, minmax_norm
+from contrast_gan_3D.data.utils import MinMaxNormShift
 from contrast_gan_3D.model.loss import WassersteinLoss, ZNCCLoss
-from contrast_gan_3D.utils import geometry as geom
+from contrast_gan_3D.trainer.ImageLogger import ImageLogger
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
+# TODO create_trainer function to import into notebooks to avoid errors
+# TODO normalize generator's output inside generator?? to avoid errors in train/val
 # TODO plot discriminator/generator losses on real/fake samples together & separately
 
 # TODO use fold index to group cval runs belonging to same experiment together
@@ -69,6 +66,7 @@ class Trainer:
         max_HU_delta: int,
         hu_loss_instance: nn.Module,
         normalizer: MinMaxNormShift,
+        image_logger: ImageLogger,
         run_id: str,
         device: torch.device,
         generator_lr_scheduler: Optional[LRScheduler] = None,
@@ -77,12 +75,10 @@ class Trainer:
         sim_loss_weight: float = 1.0,
         gan_loss_weight: float = 1.0,
         checkpoint_every: int = 1000,
-        rng: Optional[np.random.Generator] = None,
         profiler_dir: Optional[Union[Path, str]] = None,
     ):
         self.device = device
         logger.info("Using device: %s", self.device)
-        self.rng = rng or np.random.default_rng()
 
         self.train_iterations = train_iterations
         self.val_iterations = val_iterations
@@ -117,6 +113,7 @@ class Trainer:
         self.load_checkpoint(self.checkpoint_path)
 
         self.val_bs = val_bs
+        self.image_logger = image_logger
 
         self.profiler = None
         if profiler_dir is not None:
@@ -204,7 +201,7 @@ class Trainer:
                 [None, *opt_hat.chunk(2)],
                 [None, *attenuation_map.chunk(2)],
             ):
-                self.log_images(
+                self.image_logger(
                     data["data"],
                     iteration,
                     "train",
@@ -281,7 +278,7 @@ class Trainer:
                         loss_sim += self.loss_similarity(sample_hat, sample)
 
                     if i == 0:
-                        self.log_images(
+                        self.image_logger(
                             sample,
                             train_iteration,
                             "validation",
@@ -344,100 +341,6 @@ class Trainer:
     @staticmethod
     def log_loss(loss_dict: Dict[str, Tensor], iteration: int, stage: str):
         wandb.log({f"{stage}/{k}": v for k, v in loss_dict.items()}, step=iteration)
-
-    def _log_images_grid(
-        self,
-        slices: Union[Tensor, np.ndarray],
-        tag: str,
-        iteration: int,
-        fig: figure.Figure = None,
-        caption: Optional[str] = None,
-        **grid_args,
-    ):
-        if isinstance(slices, np.ndarray):
-            slices = torch.from_numpy(slices)
-        # CHWD -> DCHW -> C,HxD,WxD
-        grid = make_grid(slices.permute(3, 0, 1, 2), **grid_args)
-        if fig is None:
-            fig, ax = plt.subplots(figsize=(10, 10))
-        else:
-            ax, *_ = fig.get_axes()
-        ax.imshow(grid.permute(1, 2, 0))
-        ax.set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
-        fig.tight_layout()
-        wandb.log({tag: wandb.Image(ax, caption=caption)}, step=iteration)
-        plt.close(fig)
-
-    # log 64 slices of a random sample in a batch
-    def log_images(
-        self,
-        scans: Tensor,
-        iteration: int,
-        stage: str,
-        scan_type: str,
-        names: List[str],
-        masks: Optional[Tensor] = None,
-        reconstructions: Optional[Tensor] = None,
-        attenuations: Optional[Tensor] = None,
-    ):
-        value_range = (self.normalizer.low, self.normalizer.high)
-        sample_idx = self.rng.integers(len(scans))
-        slice_idxs = sorted(self.rng.choice(scans.shape[-1], size=64, replace=False))
-        indexer = [sample_idx, ..., slice_idxs]
-        grid_args = {"normalize": True, "value_range": (VMIN, VMAX)}
-        cmap, fig, caption = cm.RdBu, None, names[sample_idx]
-        caption_cp = caption
-
-        if stage == "train":
-            # show centerlines by scattering manually
-            ctls = masks[indexer].permute(3, 0, 1, 2).to(torch.float16)
-            ctls_grid = make_grid(ctls)
-            # DHW -> HWD (yxz)
-            cart = geom.grid_to_cartesian_coords(ctls_grid.cpu().permute(1, 2, 0))
-            fig, ax = plt.subplots(figsize=(10, 10))
-            ax.scatter(
-                cart[:, 1],
-                cart[:, 0],
-                c="red",
-                s=plt.rcParams["lines.markersize"] * 0.8,
-            )
-            caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
-
-        slices = minmax_denorm(scans[indexer] + self.normalizer.shift, value_range)
-        workspace = f"{stage}/images/{scan_type}"
-        self._log_images_grid(
-            slices.cpu(),
-            f"{workspace}/sample",
-            iteration,
-            fig=fig,
-            caption=caption_cp,
-            **grid_args,
-        )
-        if reconstructions is not None:
-            recon = reconstructions[indexer]
-            recon = minmax_denorm(recon, value_range) - self.normalizer.low
-            self._log_images_grid(
-                recon.cpu(),
-                f"{workspace}/reconstruction",
-                iteration,
-                caption=caption,
-                **grid_args,
-            )
-        if attenuations is not None:
-            # normalize [-1, 1]->[0, 1] for colormap (min and max from entire sample)
-            attn_sample = attenuations[sample_idx]
-            low, high = attn_sample.min().item(), attn_sample.max().item()
-            attn = minmax_norm(attenuations[indexer], (low, high))
-            # https://discuss.pytorch.org/t/torch-utils-make-grid-with-cmaps/107471/2
-            attn = np.apply_along_axis(cmap, 0, attn.detach().cpu().numpy()).squeeze()
-            # add colorbar
-            fig, ax = plt.subplots(figsize=(10, 10))
-            mappable = cm.ScalarMappable(norm=colors.Normalize(low, high), cmap=cmap)
-            cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
-            cbar.set_ticks(np.linspace(low, high, 5))
-            self._log_images_grid(
-                attn, f"{workspace}/attenuation", iteration, fig=fig, caption=caption
-            )
 
     @staticmethod
     def _manage_augmenters(augmenters: List[Dict[int, BGenAugmenter]], event: str):
