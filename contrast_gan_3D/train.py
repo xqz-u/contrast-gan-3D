@@ -96,7 +96,11 @@ def main(
             # train_bantch_size * 2 == [low batch, high batch]
             HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
             MinMaxNormShift(*HU_norm_range, norm_train_mean),
-            ImageLogger(HU_norm_range, train_mean, rng=np.random.default_rng(seed)),
+            ImageLogger(
+                HU_norm_range[1] - HU_norm_range[0],
+                train_mean,
+                rng=np.random.default_rng(seed),
+            ),
             run_id,
             generator_lr_scheduler=generator_lr_scheduler,
             discriminator_lr_scheduler=discriminator_lr_scheduler,

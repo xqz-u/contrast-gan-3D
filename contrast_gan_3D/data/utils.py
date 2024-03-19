@@ -89,16 +89,6 @@ class MinMaxNormShift(nn.Module):
         return minmax_norm(x, (self.low, self.high)) - self.shift
 
 
-def minmax_denorm(
-    x: Union[Array, float], value_range: Optional[Tuple[float, float]] = None
-):
-    if value_range is None:
-        assert isinstance(x, (np.ndarray, torch.Tensor))
-        value_range = (x.min(), x.max())
-    low, high = value_range
-    return x * (high - low) + low
-
-
 # NOTE use only the train dataset mean, exclude test data! e.g. in cval loop
 def compute_dataset_mean(*ct_scan_paths: Iterable[Union[str, Path]]):
     sum_, n_pix = 0, 0

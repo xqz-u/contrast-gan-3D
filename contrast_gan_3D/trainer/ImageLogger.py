@@ -11,13 +11,13 @@ from torchvision.utils import make_grid
 
 import wandb
 from contrast_gan_3D.constants import VMAX, VMIN
-from contrast_gan_3D.data.utils import minmax_denorm, minmax_norm
+from contrast_gan_3D.data.utils import minmax_norm
 from contrast_gan_3D.utils import geometry as geom
 
 
 @dataclass
 class ImageLogger:
-    norm_range: Tuple[int, int]
+    norm_denominator: int
     shift: int
     sample_size: int = 64
     rng: np.random.Generator = field(default_factory=np.random.default_rng)
@@ -64,7 +64,7 @@ class ImageLogger:
             )
             caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
 
-        slices = minmax_denorm(scans[indexer] + self.shift, self.norm_range)
+        slices = scans[indexer] * self.norm_denominator + self.shift
         workspace = f"{stage}/images/{scan_type}"
         self.log_wandb_image(
             slices.cpu(),
@@ -75,8 +75,7 @@ class ImageLogger:
             **grid_args,
         )
         if reconstructions is not None:
-            recon = reconstructions[indexer]
-            recon = minmax_denorm(recon, self.norm_range) - self.norm_range[0]
+            recon = reconstructions[indexer] * self.norm_denominator
             self.log_wandb_image(
                 recon.cpu(),
                 f"{workspace}/reconstruction",
