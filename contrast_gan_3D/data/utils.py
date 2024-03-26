@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 import torch
-from torch import nn
 from tqdm.auto import tqdm
 
 from contrast_gan_3D.alias import Array
@@ -77,16 +76,6 @@ def minmax_norm(
         value_range = (x.min(), x.max())
     low, high = value_range
     return (x - low) / max(high - low, 1e-5)
-
-
-# pack low, high, shift in one place that still uses autograd
-class MinMaxNormShift(nn.Module):
-    def __init__(self, low: float, high: float, shift: float):
-        super().__init__()
-        self.low, self.high, self.shift = low, high, shift
-
-    def forward(self, x: torch.Tensor):
-        return minmax_norm(x, (self.low, self.high)) - self.shift
 
 
 # NOTE use only the train dataset mean, exclude test data! e.g. in cval loop

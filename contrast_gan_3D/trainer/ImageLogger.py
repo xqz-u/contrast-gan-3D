@@ -10,15 +10,16 @@ from torch import Tensor
 from torchvision.utils import make_grid
 
 import wandb
+from contrast_gan_3D.alias import Array
 from contrast_gan_3D.constants import VMAX, VMIN
+from contrast_gan_3D.data.Scaler import FactorZeroCenterScaler, MinMaxScaler
 from contrast_gan_3D.data.utils import minmax_norm
 from contrast_gan_3D.utils import geometry as geom
 
 
 @dataclass
 class ImageLogger:
-    norm_denominator: int
-    shift: int
+    scaler: Union[FactorZeroCenterScaler, MinMaxScaler]
     sample_size: int = 64
     rng: np.random.Generator = field(default_factory=np.random.default_rng)
     cmap: colors.Colormap = field(default_factory=lambda: cm.RdBu)
@@ -30,6 +31,12 @@ class ImageLogger:
             self.rng.choice(batch_shape[-1], size=self.sample_size, replace=False)
         )
         return [sample_idx, ..., slice_idxs]
+
+    def reconstruct_sample(self, slices: Array) -> Array:
+        return self.scaler.unscale(slices)
+
+    def reconstruct_optimized_sample(self, slices: Array) -> Array:
+        return self.scaler.unscale(slices)
 
     # log 64 slices of a random sample in a batch
     def __call__(
@@ -64,12 +71,12 @@ class ImageLogger:
             )
             caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
 
-        slices = scans[indexer] * self.norm_denominator + self.shift
+        slices = self.reconstruct_sample(scans[indexer])
         fig = ImageLogger.create_grid_figure(slices.cpu(), fig, **grid_args)
         self.log_wandb_image(f"{workspace}/sample", it, fig, caption=caption_cp)
 
         if reconstructions is not None:
-            recon = reconstructions[indexer] * self.norm_denominator
+            recon = self.reconstruct_optimized_sample(reconstructions[indexer])
             fig = ImageLogger.create_grid_figure(recon.cpu(), **grid_args)
             self.log_wandb_image(
                 f"{workspace}/reconstruction", it, fig, caption=caption
@@ -118,5 +125,20 @@ class ImageLogger:
         fig: Figure,
         caption: Optional[str] = None,
     ):
-        wandb.log({tag: wandb.Image(fig, caption=caption)}, step=it)
+        image = wandb.Image(fig, caption=caption)
+        # image.image.show()
+        wandb.log({tag: image}, step=it)
         plt.close(fig)
+
+
+@dataclass
+class MinMaxImageLogger(ImageLogger):
+    scaler: MinMaxScaler
+
+    def reconstruct_optimized_sample(self, slices: Array) -> Array:
+        return slices * (self.scaler.high - self.scaler.low)
+
+
+@dataclass
+class ZeroCenterImageLogger(ImageLogger):
+    scaler: FactorZeroCenterScaler

@@ -93,8 +93,7 @@ def load_sitk_image(
 
     image = image.astype(np.int16)
     # constrain the scan to lie in [MIN_HU, MAX_HU]
-    diff = image.min() - MIN_HU
-    if diff >= abs(MIN_HU):
+    if (diff := image.min() - MIN_HU ) >= abs(MIN_HU):
         image -= diff
     image = image.clip(MIN_HU, MAX_HU)
 

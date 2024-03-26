@@ -1,9 +1,12 @@
 import os
 
+from contrast_gan_3D.data.Scaler import FactorMinMaxScaler, MinMaxScaler
+
 # https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
 from pathlib import Path
+from pprint import pprint
 from typing import Optional
 
 import numpy as np
@@ -13,15 +16,10 @@ from wandb.sdk.lib.runid import generate_id
 import wandb
 from contrast_gan_3D import utils
 from contrast_gan_3D.config import LOGS_DIR
-from contrast_gan_3D.data.utils import (
-    MinMaxNormShift,
-    compute_dataset_mean,
-    minmax_norm,
-)
+from contrast_gan_3D.data.utils import compute_dataset_mean, minmax_norm
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.model.loss import HULoss
 from contrast_gan_3D.trainer import utils as train_utils
-from contrast_gan_3D.trainer.ImageLogger import ImageLogger
 from contrast_gan_3D.trainer.Trainer import Trainer
 from contrast_gan_3D.utils.logging_utils import create_logger
 
@@ -33,7 +31,6 @@ def main(
     wandb_entity: str,
     run_id: Optional[str] = None,
     profiler_dir: Optional[Path] = None,
-    experiment_config: Optional[dict] = None,
 ):
     if seed is not None:
         logger.info("Using seed %d", seed)
@@ -46,14 +43,24 @@ def main(
     train_folds, val_folds = train_utils.cval_paths(cval_folds, *dataset_paths)
 
     for i, (train_fold, val_fold) in enumerate(zip(train_folds, val_folds)):
-        logger.info("Computing train data mean for fold %d", i)
-        train_mean = compute_dataset_mean(*[p for p, _ in train_fold])
-        norm_train_mean = minmax_norm(train_mean, HU_norm_range)
+        if isinstance(scaler, MinMaxScaler):
+            logger.info("Computing train data mean for fold %d", i)
+            train_mean = compute_dataset_mean(*[p for p, _ in train_fold])
+            norm_train_mean = minmax_norm(train_mean, HU_norm_range)
+            logger.info(
+                "Train data mean: %.3f normalized %s: %.3f",
+                train_mean,
+                HU_norm_range,
+                norm_train_mean,
+            )
+            scaler.b = norm_train_mean
+            generator.scaler = FactorMinMaxScaler(
+                *HU_norm_range, max_HU_delta, b=norm_train_mean
+            )
+
+        scaled_HU_bounds = scaler(np.array(desired_HU_bounds))
         logger.info(
-            "Train data mean: %.3f normalized %s: %.3f",
-            train_mean,
-            HU_norm_range,
-            norm_train_mean,
+            "Desired HU bounds: %s scaled: %s", desired_HU_bounds, scaled_HU_bounds
         )
 
         train_loaders, val_loaders = train_utils.create_dataloaders(
@@ -63,16 +70,11 @@ def main(
             val_patch_size,
             train_batch_size,
             val_batch_size,
-            HU_norm_range,
-            norm_train_mean,
+            scaler=scaler,
             num_workers=num_workers,
             train_transform=train_transform,
             seed=seed,
         )
-
-        scaled_HU_bounds = [
-            minmax_norm(x, HU_norm_range) - norm_train_mean for x in desired_HU_bounds
-        ]
 
         if run_id is None:
             run_id = generate_id()
@@ -92,15 +94,9 @@ def main(
             discriminator,
             generator_optim,
             discriminator_optim,
-            max_HU_delta,
             # train_bantch_size * 2 == [low batch, high batch]
             HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
-            MinMaxNormShift(*HU_norm_range, norm_train_mean),
-            ImageLogger(
-                HU_norm_range[1] - HU_norm_range[0],
-                train_mean,
-                rng=np.random.default_rng(seed),
-            ),
+            image_logger,
             run_id,
             generator_lr_scheduler=generator_lr_scheduler,
             discriminator_lr_scheduler=discriminator_lr_scheduler,
@@ -108,6 +104,9 @@ def main(
             checkpoint_every=checkpoint_every,
             profiler_dir=profiler_dir,
         )
+
+        experiment_config = train_utils.update_experiment_config(globals())
+        pprint(experiment_config)
 
         wandb.init(
             id=run_id,
@@ -124,7 +123,6 @@ def main(
 
 if __name__ == "__main__":
     import argparse
-    from pprint import pprint
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -154,13 +152,9 @@ if __name__ == "__main__":
         override_module = train_utils.global_overrides(override_module)
         globals().update(vars(override_module))
 
-    experiment_config = train_utils.update_experiment_config(globals())
-    pprint(experiment_config)
-
     main(
         args.wandb_project,
         args.wandb_entity,
         run_id=args.wandb_run_id,
         profiler_dir=args.profiler_dir,
-        experiment_config=experiment_config,
     )

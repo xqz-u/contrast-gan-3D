@@ -18,6 +18,7 @@ from sklearn.model_selection import StratifiedKFold
 from contrast_gan_3D.alias import BGenAugmenter, Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
 from contrast_gan_3D.data.CCTADataLoader3D import CCTADataLoader3D
+from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.utils import object_name
 
 
@@ -58,8 +59,7 @@ def create_dataloaders(
     val_patch_size: Union[Shape3D, int],
     train_batch_size: int,
     val_batch_size: int,
-    normalize_range: Tuple[int, int],
-    train_mean: float,
+    scaler: Scaler = lambda x: x,
     num_workers: Tuple[int, int] = (1, 1),
     train_transform: Optional[Callable[[dict], dict]] = None,
     seed: int = DEFAULT_SEED,
@@ -73,8 +73,7 @@ def create_dataloaders(
                 paths,
                 train_patch_size,
                 train_batch_size,
-                normalize_range=normalize_range,
-                dataset_mean=train_mean,
+                scaler=scaler,
                 shuffle=True,
                 num_threads_in_multithreaded=num_workers[0],
                 seed_for_shuffle=seed,
@@ -93,8 +92,7 @@ def create_dataloaders(
                 paths,
                 val_patch_size,
                 val_batch_size,
-                normalize_range=normalize_range,
-                dataset_mean=train_mean,
+                scaler=scaler,
                 shuffle=True,
                 num_threads_in_multithreaded=num_workers[1],
                 seed_for_shuffle=seed,
@@ -162,18 +160,18 @@ def update_experiment_config(vars: dict) -> dict:
                 "log_every",
                 "log_images_every",
                 "num_workers",
+                "generator",
+                "discriminator",
             ]
         }
         | {
             k: object_name(vars[k])
             for k in [
-                "generator",
                 "generator_optim",
                 "generator_lr_scheduler",
-                "discriminator",
                 "discriminator_optim",
                 "discriminator_lr_scheduler",
             ]
         }
-        | {"train_transform": str(vars["train_transform"])}
+        | {k: str(vars[k]) for k in ["train_transform", "scaler", "image_logger"]}
     )

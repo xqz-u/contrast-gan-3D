@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.spatial_transforms import SpatialTransform_2
@@ -6,18 +7,19 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import MultiStepLR
 
 from contrast_gan_3D.constants import MAX_HU, MIN_HU, TRAIN_PATCH_SIZE, VAL_PATCH_SIZE
+from contrast_gan_3D.data.Scaler import FactorZeroCenterScaler
 from contrast_gan_3D.model.discriminator import PatchGANDiscriminator
 from contrast_gan_3D.model.generator import ResnetGenerator
+from contrast_gan_3D.trainer.ImageLogger import ZeroCenterImageLogger
 from contrast_gan_3D.utils import geometry as geom
 
 # **** NOTE **** change GPU index here
 device_str = "cpu"
 if torch.cuda.is_available():
-    torch.cuda.set_device(1)
+    torch.cuda.set_device(3)
     device_str = f"cuda:{torch.cuda.current_device()}"
 device = torch.device(device_str)
 
-# train_iterations = int(1e4)
 train_iterations = int(6e3)
 val_iterations = 10
 train_generator_every = 5
@@ -25,8 +27,8 @@ train_generator_every = 5
 seed = None
 checkpoint_every = int(1e3)
 validate_every = 200
-log_every = 50
-log_images_every = 100
+log_every = 100
+log_images_every = 200
 
 # ------------ MODEL ------------
 lr = 2e-4
@@ -34,10 +36,12 @@ betas = (5e-1, 0.999)
 milestones = list(map(int, [6e3, 8e3]))
 lr_gamma = 0.1
 
-# HU loss
+# HU loss & details
 max_HU_delta = 600
 desired_HU_bounds = (350, 450)
 HU_norm_range = (MIN_HU, MAX_HU)
+scaler = FactorZeroCenterScaler(*HU_norm_range, max_HU_delta)
+image_logger = ZeroCenterImageLogger(scaler, rng=np.random.default_rng(seed=seed))
 
 generator_args = {
     "n_resnet_blocks": 6,

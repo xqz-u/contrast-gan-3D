@@ -14,15 +14,12 @@ from tqdm.auto import trange
 import wandb
 from contrast_gan_3D.alias import BGenAugmenter, ScanType
 from contrast_gan_3D.config import CHECKPOINTS_DIR
-from contrast_gan_3D.data.utils import MinMaxNormShift
 from contrast_gan_3D.model.loss import WassersteinLoss, ZNCCLoss
 from contrast_gan_3D.trainer.ImageLogger import ImageLogger
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO create_trainer function to import into notebooks to avoid errors
-# TODO normalize generator's output inside generator?? to avoid errors in train/val
 # TODO plot discriminator/generator losses on real/fake samples together & separately
 
 # TODO use fold index to group cval runs belonging to same experiment together
@@ -30,7 +27,7 @@ logger = create_logger(name=__name__)
 #      use the same train data as before it was stopped / save it into wandb itself!
 
 # TODO profile
-# TODO log images in background thread
+# TODO log images in background thread! logging takes a lot of time as it is
 
 # TODO `margin` parameter of batchgenerator's crop?
 # TODO create few 3D scans of fake images to import into ITK-SNAP
@@ -41,12 +38,7 @@ logger = create_logger(name=__name__)
 
 # TODO other generator/discriminator architectures
 # TODO gradient penalized Wasserstein loss instead of clipping network
-#      parameters
-
-# TODO inference: patches aggregation
-
-# TODO run centerline extraction + opt/low/high dataset creation with new HU values
-#      shifting approach
+#      parameters https://arxiv.org/pdf/1704.00028.pdf
 
 
 class Trainer:
@@ -63,9 +55,7 @@ class Trainer:
         discriminator: nn.Module,
         generator_optim: Optimizer,
         discriminator_optim: Optimizer,
-        max_HU_delta: int,
         hu_loss_instance: nn.Module,
-        normalizer: MinMaxNormShift,
         image_logger: ImageLogger,
         run_id: str,
         device: torch.device,
@@ -102,8 +92,6 @@ class Trainer:
         self.loss_GAN = WassersteinLoss()
         self.loss_similarity = ZNCCLoss()
         self.loss_HU = hu_loss_instance
-        self.max_HU_delta = max_HU_delta
-        self.normalizer = normalizer
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = CHECKPOINTS_DIR / f"{run_id}.pt"
@@ -147,8 +135,8 @@ class Trainer:
         ]
 
         # generate optimal image
-        attenuation_map: Tensor = self.generator(subopt)
-        opt_hat: Tensor = subopt - self.normalizer(attenuation_map * self.max_HU_delta)
+        attenuation, attenuation_scaled = self.generator(subopt)
+        opt_hat: Tensor = subopt - attenuation_scaled
 
         # ------------------ discriminator
         D_x: Tensor = self.discriminator(opt)
@@ -191,15 +179,13 @@ class Trainer:
                 {k: v.mean() for k, v in log_dict.items()}, iteration, "train"
             )
 
-        # return opt_hat, attenuation_map
-
         if iteration % self.log_images_every == 0:
             # reconstruction and low/high are logged with the same indices
             for data, scan_type, recon, attn_map in zip(
                 patches,
                 ScanType,
                 [None, *opt_hat.chunk(2)],
-                [None, *attenuation_map.chunk(2)],
+                [None, *attenuation.chunk(2)],
             ):
                 self.image_logger(
                     data["data"],
@@ -219,7 +205,7 @@ class Trainer:
     ):
         self.generator.train()
         self.discriminator.train()
-        # start batchgenerator's augmentations asynchronously
+        # start batchgenerator's async augmenters
         self._manage_augmenters([train_loaders, val_loaders], "start")
 
         for iteration in trange(
@@ -240,6 +226,7 @@ class Trainer:
             if iteration % self.checkpoint_every == 0:
                 self.save_checkpoint(self.checkpoint_path, iteration)
 
+        # on_train_end stage
         if self.profiler:
             self.profiler.stop()
         self.save_checkpoint(self.checkpoint_path, self.train_iterations)
@@ -263,15 +250,13 @@ class Trainer:
                 ):
                     batch = next(loader)
                     sample = batch["data"].to(self.device, non_blocking=True)
-                    sample_hat, attenuation_map = None, None
+                    sample_hat, attenuation = None, None
 
                     if scan_type == ScanType.OPT:
                         loss_real_D -= self.loss_GAN(self.discriminator(sample))
                     else:
-                        attenuation_map = self.generator(sample)
-                        sample_hat = sample - self.normalizer(
-                            attenuation_map * self.max_HU_delta
-                        )
+                        attenuation, attenuation_scaled = self.generator(sample)
+                        sample_hat = sample - attenuation_scaled
                         batch_loss_G = self.loss_GAN(self.discriminator(sample_hat))
                         loss_fake_D += batch_loss_G
                         loss_G -= batch_loss_G
@@ -285,7 +270,7 @@ class Trainer:
                             scan_type.name,
                             batch["name"],
                             reconstructions=sample_hat,
-                            attenuations=attenuation_map,
+                            attenuations=attenuation,
                         )
 
         self.discriminator.train()

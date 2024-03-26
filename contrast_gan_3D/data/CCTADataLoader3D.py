@@ -9,7 +9,7 @@ from torch.utils.data import default_collate
 
 from contrast_gan_3D.alias import Shape3D
 from contrast_gan_3D.data.HD5Scan import HD5Scan
-from contrast_gan_3D.data.utils import minmax_norm
+from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
@@ -23,8 +23,7 @@ class CCTADataLoader3D(DataLoader):
         data: List[Union[str, Path]],
         patch_size: Shape3D,
         batch_size: int,
-        normalize_range: Optional[Tuple[float, float]] = None,
-        dataset_mean: Optional[float] = None,
+        scaler: Scaler,
         infinite: bool = True,
         shuffle=True,
         num_threads_in_multithreaded=1,
@@ -45,18 +44,10 @@ class CCTADataLoader3D(DataLoader):
         self.patch_size = patch_size
         self.batch_shape = (self.batch_size, 1, *self.patch_size)
         self.indices = list(range(len(data)))
-        self.dataset_mean = dataset_mean
-        self.normalize_range = normalize_range
+        self.scaler = scaler
 
     def __len__(self) -> int:
         return len(self.indices)
-
-    def scale(self, arr: np.ndarray) -> np.ndarray:
-        if self.normalize_range is not None:  # scale to [0, 1]
-            arr = minmax_norm(arr, self.normalize_range)
-        if self.dataset_mean is not None:  # 0-center
-            arr -= self.dataset_mean
-        return arr
 
     def generate_one(self, idx: int) -> Tuple[np.ndarray, np.ndarray, dict, str]:
         with HD5Scan(self._data[idx]) as patient:
@@ -72,7 +63,7 @@ class CCTADataLoader3D(DataLoader):
                 # crop_type="center",
             )
             patch, mask = patch.swapaxes(2, 3), mask.swapaxes(2, 3)
-        return self.scale(patch), mask, patient.meta, patient.name
+        return self.scaler(patch), mask, patient.meta, patient.name
 
     def generate_train_batch(self) -> dict:
         data = np.zeros(self.batch_shape, dtype=np.float32)  # BCHWD
