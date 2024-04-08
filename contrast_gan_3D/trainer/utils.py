@@ -3,7 +3,7 @@ import os
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -59,7 +59,7 @@ def create_dataloaders(
     val_patch_size: Union[Shape3D, int],
     train_batch_size: int,
     val_batch_size: int,
-    scaler: Scaler = lambda x: x,
+    scaler: Type[Scaler] = lambda x: x,
     num_workers: Tuple[int, int] = (1, 1),
     train_transform: Optional[Callable[[dict], dict]] = None,
     seed: int = DEFAULT_SEED,
@@ -173,5 +173,5 @@ def update_experiment_config(vars: dict) -> dict:
                 "discriminator_lr_scheduler",
             ]
         }
-        | {k: str(vars[k]) for k in ["train_transform", "scaler", "image_logger"]}
+        | {k: str(vars[k]) for k in ["train_transform", "scaler", "logger_interface"]}
     )

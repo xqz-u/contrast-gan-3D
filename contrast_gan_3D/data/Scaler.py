@@ -41,7 +41,6 @@ class FactorMinMaxScaler(MinMaxScaler):
     def forward(self, x: Array):
         return super().forward(x * self.factor)
 
-    # actually unused
     def unscale(self, x: Array) -> Array:
         return super().unscale(x) / self.factor
 

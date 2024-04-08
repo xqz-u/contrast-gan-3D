@@ -10,35 +10,32 @@ from torch import Tensor, nn, profiler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from tqdm.auto import trange
+from tqdm.contrib.itertools import product as tqdm_product
 
-import wandb
 from contrast_gan_3D.alias import BGenAugmenter, ScanType
 from contrast_gan_3D.config import CHECKPOINTS_DIR
 from contrast_gan_3D.model.loss import WassersteinLoss, ZNCCLoss
-from contrast_gan_3D.trainer.ImageLogger import ImageLogger
+from contrast_gan_3D.trainer.logger.LoggerInterface import (
+    MultiThreadedLogger,
+    SingleThreadedLogger,
+)
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO plot discriminator/generator losses on real/fake samples together & separately
+# TODO probably wrong validation metrics
+
+# TODO gradient penalized Wasserstein loss instead of clipping network
+#      parameters https://arxiv.org/pdf/1704.00028.pdf
 
 # TODO use fold index to group cval runs belonging to same experiment together
 # TODO save folds configuration so that restarting a wandb.run is guaranteed to
 #      use the same train data as before it was stopped / save it into wandb itself!
 
-# TODO profile
-# TODO log images in background thread! logging takes a lot of time as it is
-
 # TODO `margin` parameter of batchgenerator's crop?
 # TODO create few 3D scans of fake images to import into ITK-SNAP
 
-# TODO check wait time of augmenters is tuned right
-
 # TODO AMP, DDP (?)
-
-# TODO other generator/discriminator architectures
-# TODO gradient penalized Wasserstein loss instead of clipping network
-#      parameters https://arxiv.org/pdf/1704.00028.pdf
 
 
 class Trainer:
@@ -50,13 +47,12 @@ class Trainer:
         train_generator_every: int,
         log_every: int,
         log_images_every: int,
-        val_bs: int,
         generator: nn.Module,
         discriminator: nn.Module,
         generator_optim: Optimizer,
         discriminator_optim: Optimizer,
         hu_loss_instance: nn.Module,
-        image_logger: ImageLogger,
+        logger_interface: Union[SingleThreadedLogger, MultiThreadedLogger],
         run_id: str,
         device: torch.device,
         generator_lr_scheduler: Optional[LRScheduler] = None,
@@ -64,8 +60,7 @@ class Trainer:
         hu_loss_weight: float = 1.0,
         sim_loss_weight: float = 1.0,
         gan_loss_weight: float = 1.0,
-        checkpoint_every: int = 1000,
-        profiler_dir: Optional[Union[Path, str]] = None,
+        checkpoint_every: Optional[int] = 1000,
     ):
         self.device = device
         logger.info("Using device: %s", self.device)
@@ -92,6 +87,7 @@ class Trainer:
         self.loss_GAN = WassersteinLoss()
         self.loss_similarity = ZNCCLoss()
         self.loss_HU = hu_loss_instance
+        self.logger_interface = logger_interface
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = CHECKPOINTS_DIR / f"{run_id}.pt"
@@ -100,43 +96,17 @@ class Trainer:
         self.iteration = 0
         self.load_checkpoint(self.checkpoint_path)
 
-        self.val_bs = val_bs
-        self.image_logger = image_logger
-
-        self.profiler = None
-        if profiler_dir is not None:
-            # hard-set to show cost of wandb logging
-            self.val_every, self.val_iterations = 20, 10
-            self.log_every = self.log_images_every = 20
-            logger.info(
-                "PyTorch profiler with TensorBoard trace in: '%s'", profiler_dir
-            )
-            activities = [profiler.ProfilerActivity.CPU]
-            if "cuda" in self.device.type:
-                activities.append(profiler.ProfilerActivity.CUDA)
-            self.profiler = profiler.profile(
-                activities=activities,
-                schedule=profiler.schedule(skip_first=5, wait=2, warmup=3, active=10),
-                on_trace_ready=profiler.tensorboard_trace_handler(profiler_dir),
-                profile_memory=True,
-                with_stack=True,
-            )
-
     def train_step(self, patches: List[dict], iteration: int):
         self.optimizer_D.zero_grad(set_to_none=True)
 
         opt, low, high = patches
+        opt = opt["data"].to(self.device, non_blocking=True)
         subopt = torch.cat([low["data"], high["data"]])
-        subopt_mask = torch.cat([low["seg"], high["seg"]])
-        # to GPU
-        opt, subopt, subopt_mask = [
-            el.to(self.device, non_blocking=True)
-            for el in [opt["data"], subopt, subopt_mask]
-        ]
+        subopt = subopt.to(self.device, non_blocking=True)
 
         # generate optimal image
-        attenuation, attenuation_scaled = self.generator(subopt)
-        opt_hat: Tensor = subopt - attenuation_scaled
+        attenuation = self.generator(subopt)
+        opt_hat: Tensor = subopt - attenuation
 
         # ------------------ discriminator
         D_x: Tensor = self.discriminator(opt)
@@ -153,12 +123,14 @@ class Trainer:
         # ------------------ generator
         if iteration % self.train_generator_every == 0:
             self.optimizer_G.zero_grad(set_to_none=True)
+            subopt_mask = torch.cat([low["seg"], high["seg"]])
+            subopt_mask = subopt_mask.to(self.device, non_blocking=True)
 
             loss_G = self.gan_loss_w * -self.loss_GAN(self.discriminator(opt_hat))
             loss_sim = self.sim_loss_w * self.loss_similarity(opt_hat, subopt)
             loss_hu = self.hu_loss_w * self.loss_HU(opt_hat, subopt_mask)
             if torch.isnan(loss_hu):
-                loss_hu = 0.0
+                loss_hu = torch.zeros(1, device=self.device)
 
             # full generator loss
             full_loss_G: Tensor = loss_G + loss_sim + loss_hu
@@ -175,47 +147,34 @@ class Trainer:
 
         # ------------------ logging
         if iteration % self.log_every == 0:
-            self.log_loss(
+            self.logger_interface.logger.log_loss(
                 {k: v.mean() for k, v in log_dict.items()}, iteration, "train"
             )
 
         if iteration % self.log_images_every == 0:
-            # reconstruction and low/high are logged with the same indices
-            for data, scan_type, recon, attn_map in zip(
+            # method = self.wandb_logger.multiple
+            method = self.logger_interface
+            method(
                 patches,
-                ScanType,
                 [None, *opt_hat.chunk(2)],
                 [None, *attenuation.chunk(2)],
-            ):
-                self.image_logger(
-                    data["data"],
-                    iteration,
-                    "train",
-                    scan_type.name,
-                    data["name"],
-                    masks=data["seg"],
-                    reconstructions=recon,
-                    attenuations=attn_map,
-                )
+                iteration,
+                "train",
+            )
 
     def fit(
         self,
         train_loaders: Dict[int, BGenAugmenter],
         val_loaders: Dict[int, BGenAugmenter],
+        profiler: Optional[profiler.profile] = None,
     ):
         self.generator.train()
         self.discriminator.train()
         # start batchgenerator's async augmenters
+        self.retrieve_batch_size(train_loaders[ScanType.OPT.value], "train")
         self._manage_augmenters([train_loaders, val_loaders], "start")
 
-        for iteration in trange(
-            self.iteration, self.train_iterations, desc="Train", unit="batch"
-        ):
-            if self.profiler:
-                if iteration + 1 >= 65:
-                    break
-                self.profiler.step()
-
+        for iteration in trange(self.iteration, self.train_iterations, desc="Train"):
             # NOTE order is determined by ScanType
             patches = [next(train_loaders[scan_type.value]) for scan_type in ScanType]
             self.train_step(patches, iteration)
@@ -223,55 +182,68 @@ class Trainer:
             if iteration != 0 and iteration % self.val_every == 0:
                 self.validate(val_loaders, iteration)
 
-            if iteration % self.checkpoint_every == 0:
+            if (
+                self.checkpoint_every is not None
+                and iteration % self.checkpoint_every == 0
+            ):
                 self.save_checkpoint(self.checkpoint_path, iteration)
 
-        # on_train_end stage
-        if self.profiler:
-            self.profiler.stop()
+            if profiler:
+                profiler.step()
+
+        if profiler:
+            profiler.stop()
         self.save_checkpoint(self.checkpoint_path, self.train_iterations)
         self._manage_augmenters([train_loaders, val_loaders], "end")
+        self.logger_interface.end_hook()
 
     def validate(self, val_loaders: Dict[int, BGenAugmenter], train_iteration: int):
         self.discriminator.eval()
         self.generator.eval()
+        self.retrieve_batch_size(val_loaders[ScanType.OPT.value], "val")
 
         loss_sim, loss_G, loss_real_D, loss_fake_D = torch.zeros(
             4, dtype=torch.float32, device=self.device
         )
+        loggable = []
 
         with torch.no_grad():
-            for scan_type in ScanType:
-                loader = val_loaders[scan_type.value]
-                for i in trange(
-                    self.val_iterations,
-                    desc=f"Val {train_iteration // self.val_every} <{scan_type.name}>",
-                    unit="batch",
-                ):
-                    batch = next(loader)
-                    sample = batch["data"].to(self.device, non_blocking=True)
-                    sample_hat, attenuation = None, None
+            for i, scan_type_enum in tqdm_product(
+                range(self.val_iterations),
+                ScanType,
+                desc=f"Val {train_iteration // self.val_every}",
+            ):
+                batch = next(val_loaders[scan_type_enum.value])
+                sample = batch["data"].to(self.device, non_blocking=True)
+                sample_hat, attenuation = None, None
 
-                    if scan_type == ScanType.OPT:
-                        loss_real_D -= self.loss_GAN(self.discriminator(sample))
-                    else:
-                        attenuation, attenuation_scaled = self.generator(sample)
-                        sample_hat = sample - attenuation_scaled
-                        batch_loss_G = self.loss_GAN(self.discriminator(sample_hat))
-                        loss_fake_D += batch_loss_G
-                        loss_G -= batch_loss_G
-                        loss_sim += self.loss_similarity(sample_hat, sample)
+                if scan_type_enum == ScanType.OPT:
+                    loss_real_D -= self.loss_GAN(self.discriminator(sample))
+                else:
+                    attenuation = self.generator(sample)
+                    sample_hat = sample - attenuation
+                    batch_loss_G = self.loss_GAN(self.discriminator(sample_hat))
+                    loss_fake_D += batch_loss_G
+                    loss_G -= batch_loss_G
+                    loss_sim += self.loss_similarity(sample_hat, sample)
 
-                    if i == 0:
-                        self.image_logger(
-                            sample,
+                if i == 0:
+                    loggable.append([batch, sample_hat, attenuation])
+                    if len(loggable) == len(ScanType):
+                        patches, reconstructions, attenuations = list(zip(*loggable))
+                        # method = self.wandb_logger.multiple
+                        method = self.logger_interface
+                        method(
+                            patches,
+                            list(reconstructions),
+                            list(attenuations),
                             train_iteration,
                             "validation",
-                            scan_type.name,
-                            batch["name"],
-                            reconstructions=sample_hat,
-                            attenuations=attenuation,
                         )
+                        # eliminate references to free up GPU memory
+                        for s, r, a in loggable:
+                            del s, r, a
+                        loggable = None
 
         self.discriminator.train()
         self.generator.train()
@@ -290,7 +262,7 @@ class Trainer:
                 [loss_sim, loss_fake_D, loss_G],
             )
         }
-        self.log_loss(val_loss, train_iteration, "validation")
+        self.logger_interface.logger.log_loss(val_loss, train_iteration, "validation")
 
     @property
     def model_torch_attrs(self) -> List[str]:
@@ -324,10 +296,6 @@ class Trainer:
         logger.info("Starting from iteration %d", self.iteration)
 
     @staticmethod
-    def log_loss(loss_dict: Dict[str, Tensor], iteration: int, stage: str):
-        wandb.log({f"{stage}/{k}": v for k, v in loss_dict.items()}, step=iteration)
-
-    @staticmethod
     def _manage_augmenters(augmenters: List[Dict[int, BGenAugmenter]], event: str):
         assert event in ["start", "end"], f"Unknown event {event!r}"
         for aug_dict in augmenters:
@@ -339,3 +307,22 @@ class Trainer:
                         augmenter.restart()
                     else:
                         augmenter._finish()
+
+    # NOTE only val_bs used atm :/
+    def retrieve_batch_size(self, augmenter: BGenAugmenter, stage: str):
+        attr_bs = f"{stage}_bs"
+        if getattr(self, attr_bs, None) is None:
+            if isinstance(
+                augmenter, (MultiThreadedAugmenter, NonDetMultiThreadedAugmenter)
+            ):
+                aug_attr_name = "generator"
+            else:
+                aug_attr_name = "data_loader"
+            setattr(self, attr_bs, getattr(augmenter, aug_attr_name).batch_size)
+            setattr(self, f"{stage}_it_patches", len(ScanType) * getattr(self, attr_bs))
+            setattr(
+                self,
+                f"{stage}_tot_patches",
+                getattr(self, f"{stage}_iterations")
+                * getattr(self, f"{stage}_it_patches"),
+            )

@@ -10,25 +10,26 @@ from contrast_gan_3D.constants import MAX_HU, MIN_HU, TRAIN_PATCH_SIZE, VAL_PATC
 from contrast_gan_3D.data.Scaler import FactorZeroCenterScaler
 from contrast_gan_3D.model.discriminator import PatchGANDiscriminator
 from contrast_gan_3D.model.generator import ResnetGenerator
-from contrast_gan_3D.trainer.ImageLogger import ZeroCenterImageLogger
+from contrast_gan_3D.trainer.logger.LoggerInterface import MultiThreadedLogger
+from contrast_gan_3D.trainer.logger.WandbLogger import WandbLogger
 from contrast_gan_3D.utils import geometry as geom
 
 # **** NOTE **** change GPU index here
 device_str = "cpu"
 if torch.cuda.is_available():
-    torch.cuda.set_device(3)
+    torch.cuda.set_device(1)
     device_str = f"cuda:{torch.cuda.current_device()}"
 device = torch.device(device_str)
 
-train_iterations = int(6e3)
+train_iterations = int(1e4)
 val_iterations = 10
 train_generator_every = 5
 # seed = DEFAULT_SEED
 seed = None
 checkpoint_every = int(1e3)
-validate_every = 200
+validate_every = 400
 log_every = 100
-log_images_every = 200
+log_images_every = 500
 
 # ------------ MODEL ------------
 lr = 2e-4
@@ -41,7 +42,9 @@ max_HU_delta = 600
 desired_HU_bounds = (350, 450)
 HU_norm_range = (MIN_HU, MAX_HU)
 scaler = FactorZeroCenterScaler(*HU_norm_range, max_HU_delta)
-image_logger = ZeroCenterImageLogger(scaler, rng=np.random.default_rng(seed=seed))
+
+logger_interface = WandbLogger(scaler, rng=np.random.default_rng(seed=seed))
+logger_interface = MultiThreadedLogger(logger_interface)
 
 generator_args = {
     "n_resnet_blocks": 6,
@@ -73,9 +76,11 @@ cval_folds = 5
 
 train_patch_size = TRAIN_PATCH_SIZE
 train_batch_size = 6  # 12 subopt 6 opt
+# train_batch_size = 3
 
 val_patch_size = VAL_PATCH_SIZE
 val_batch_size = 3  # 6 subopt 3 opt
+# val_batch_size = 2  # 6 subopt 3 opt
 
 num_workers = (train_batch_size * 2, val_batch_size * 2)  # (train, validation)
 

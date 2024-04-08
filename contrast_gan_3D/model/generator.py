@@ -3,7 +3,6 @@ from typing import Optional, OrderedDict, Tuple
 import torch
 import torch.nn as nn
 
-from contrast_gan_3D.data.Scaler import FactorMinMaxScaler
 from contrast_gan_3D.model.blocks import ConvBlock3D, ResNetBlock3D
 
 
@@ -23,7 +22,6 @@ class ResnetGenerator(nn.Module):
         n_feature_maps: int,
         resnet_dropout_prob: float = 0.0,
         resnet_padding_mode: str = "zeros",
-        scaler: Optional[FactorMinMaxScaler] = None,
     ):
         assert n_resnet_blocks > 0
 
@@ -80,11 +78,6 @@ class ResnetGenerator(nn.Module):
         model.append(("tanh", nn.Tanh()))
 
         self.model = nn.Sequential(OrderedDict(model))
-        self.scaler = scaler
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        attenuation = self.model(x)
-        attenuation_scaled = attenuation
-        if self.scaler is not None:
-            attenuation_scaled = self.scaler(attenuation)
-        return attenuation, attenuation_scaled
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)

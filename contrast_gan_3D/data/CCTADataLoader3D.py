@@ -60,11 +60,13 @@ class CCTADataLoader3D(DataLoader):
                 arteries_mask.swapaxes(0, 1)[None, None],
                 self.patch_size,
                 crop_type="random",
-                # crop_type="center",
             )
             patch, mask = patch.swapaxes(2, 3), mask.swapaxes(2, 3)
         return self.scaler(patch), mask, patient.meta, patient.name
 
+    # NOTE could try #4 from
+    # https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869
+    # to reduce CPU to GPU copy size
     def generate_train_batch(self) -> dict:
         data = np.zeros(self.batch_shape, dtype=np.float32)  # BCHWD
         masks = np.zeros(self.batch_shape, dtype=np.uint8)
