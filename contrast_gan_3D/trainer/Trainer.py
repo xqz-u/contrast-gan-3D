@@ -1,3 +1,4 @@
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -13,8 +14,8 @@ from tqdm.auto import trange
 from tqdm.contrib.itertools import product as tqdm_product
 
 from contrast_gan_3D.alias import BGenAugmenter, ScanType
-from contrast_gan_3D.config import CHECKPOINTS_DIR
 from contrast_gan_3D.model.loss import WassersteinLoss, ZNCCLoss
+from contrast_gan_3D.model.utils import wgan_gradient_penalty
 from contrast_gan_3D.trainer.logger.LoggerInterface import (
     MultiThreadedLogger,
     SingleThreadedLogger,
@@ -23,19 +24,17 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO probably wrong validation metrics
+# TODO don't overwrite checkpoints, rather save some save_checkpoint_every iters
+# TODO try bigger generator, smaller critic?
+# TODO explore conditional GAN
 
-# TODO gradient penalized Wasserstein loss instead of clipping network
-#      parameters https://arxiv.org/pdf/1704.00028.pdf
+# TODO wrong validation metrics ?
 
 # TODO use fold index to group cval runs belonging to same experiment together
 # TODO save folds configuration so that restarting a wandb.run is guaranteed to
 #      use the same train data as before it was stopped / save it into wandb itself!
 
-# TODO `margin` parameter of batchgenerator's crop?
-# TODO create few 3D scans of fake images to import into ITK-SNAP
-
-# TODO AMP, DDP (?)
+# TODO AMP, DDP ?
 
 
 class Trainer:
@@ -47,19 +46,21 @@ class Trainer:
         train_generator_every: int,
         log_every: int,
         log_images_every: int,
-        generator: nn.Module,
-        discriminator: nn.Module,
-        generator_optim: Optimizer,
-        discriminator_optim: Optimizer,
+        generator_class: partial,
+        critic_class: partial,
+        generator_optim_class: partial,
+        critic_optim_class: partial,
         hu_loss_instance: nn.Module,
         logger_interface: Union[SingleThreadedLogger, MultiThreadedLogger],
-        run_id: str,
+        checkpoint_path: Union[str, Path],
         device: torch.device,
-        generator_lr_scheduler: Optional[LRScheduler] = None,
-        discriminator_lr_scheduler: Optional[LRScheduler] = None,
+        weight_clip: Optional[float] = None,
+        generator_lr_scheduler_class: Optional[partial] = None,
+        critic_lr_scheduler_class: Optional[partial] = None,
         hu_loss_weight: float = 1.0,
         sim_loss_weight: float = 1.0,
         gan_loss_weight: float = 1.0,
+        gp_weight: float = 10,
         checkpoint_every: Optional[int] = 1000,
     ):
         self.device = device
@@ -75,14 +76,20 @@ class Trainer:
         self.hu_loss_w = hu_loss_weight
         self.sim_loss_w = sim_loss_weight
         self.gan_loss_w = gan_loss_weight
+        self.gp_w = gp_weight
+        self.weight_clip = weight_clip
 
-        self.generator = generator
-        self.optimizer_G = generator_optim
-        self.lr_scheduler_G = generator_lr_scheduler
+        self.generator: nn.Module = generator_class().to(device)
+        self.optimizer_G: Optimizer = generator_optim_class(self.generator.parameters())
+        self.lr_scheduler_G = generator_lr_scheduler_class
+        if self.lr_scheduler_G is not None:
+            self.lr_scheduler_G: LRScheduler = self.lr_scheduler_G(self.optimizer_G)
 
-        self.discriminator = discriminator
-        self.optimizer_D = discriminator_optim
-        self.lr_scheduler_D = discriminator_lr_scheduler
+        self.critic: nn.Module = critic_class().to(device)
+        self.optimizer_D: Optimizer = critic_optim_class(self.critic.parameters())
+        self.lr_scheduler_D = critic_lr_scheduler_class
+        if self.lr_scheduler_D is not None:
+            self.lr_scheduler_D: LRScheduler = self.lr_scheduler_D(self.optimizer_D)
 
         self.loss_GAN = WassersteinLoss()
         self.loss_similarity = ZNCCLoss()
@@ -90,60 +97,80 @@ class Trainer:
         self.logger_interface = logger_interface
 
         self.checkpoint_every = checkpoint_every
-        self.checkpoint_path = CHECKPOINTS_DIR / f"{run_id}.pt"
+        self.checkpoint_path = Path(checkpoint_path)
         self.checkpoint_path.parent.mkdir(exist_ok=True, parents=True)
 
         self.iteration = 0
         self.load_checkpoint(self.checkpoint_path)
 
-    def train_step(self, patches: List[dict], iteration: int):
+    def train_critic(
+        self, real: Tensor, reconstructions: Tensor, retain_graph: bool
+    ) -> Dict[str, Tensor]:
         self.optimizer_D.zero_grad(set_to_none=True)
 
+        real_logits: Tensor = self.critic(real)
+        # detach() avoids computing gradients wrt generator's output
+        fake_logits: Tensor = self.critic(reconstructions.detach())
+
+        loss_critic: Tensor = self.gan_loss_w * self.loss_GAN(fake_logits, real_logits)
+        if self.weight_clip is None:
+            loss_critic += wgan_gradient_penalty(
+                real.repeat((2,) + (1,) * len(real.shape[1:])),
+                reconstructions,
+                self.critic,
+                device=self.device,
+                lambda_=self.gp_w,
+            )
+
+        loss_critic.backward(retain_graph=retain_graph and self.weight_clip is None)
+        self.optimizer_D.step()
+        if self.weight_clip is not None:
+            for p in self.critic.parameters():
+                p.data.clamp_(-self.weight_clip, self.weight_clip)
+        if self.lr_scheduler_D is not None:
+            self.lr_scheduler_D.step()
+
+        # log_dict = {"D": loss_D, "D-real-out": D_x, "D-fake-out": D_G_x}
+        D_real_rep = real_logits.repeat((2,) + (1,) * len(real_logits.shape[1:]))
+        return {"D": loss_critic, "D-real-fake-delta": D_real_rep - fake_logits}
+
+    def train_generator(
+        self, reconstructions: Tensor, inputs: Tensor, inputs_masks: Tensor
+    ) -> Dict[str, Tensor]:
+        self.optimizer_G.zero_grad(set_to_none=True)
+
+        loss_G = self.gan_loss_w * -self.loss_GAN(self.critic(reconstructions))
+        loss_sim = self.sim_loss_w * self.loss_similarity(reconstructions, inputs)
+        loss_hu = self.hu_loss_w * self.loss_HU(reconstructions, inputs_masks)
+
+        full_loss_G: Tensor = loss_G + loss_sim + loss_hu
+        full_loss_G.backward()
+        self.optimizer_G.step()
+        if self.lr_scheduler_G is not None:
+            self.lr_scheduler_G.step()
+
+        return {"G": loss_G, "G-full": full_loss_G, "sim": loss_sim, "HU": loss_hu}
+
+    def train_step(self, patches: List[dict], iteration: int):
         opt, low, high = patches
-        opt = opt["data"].to(self.device, non_blocking=True)
+        opt: Tensor = opt["data"].to(self.device, non_blocking=True)
         subopt = torch.cat([low["data"], high["data"]])
         subopt = subopt.to(self.device, non_blocking=True)
 
         # generate optimal image
-        attenuation = self.generator(subopt)
+        attenuation: Tensor = self.generator(subopt)
         opt_hat: Tensor = subopt - attenuation
 
-        # ------------------ discriminator
-        D_x: Tensor = self.discriminator(opt)
-        D_G_x: Tensor = self.discriminator(opt_hat.detach())
-
-        loss_D: Tensor = self.gan_loss_w * self.loss_GAN(D_G_x, D_x)
-        loss_D.backward()
-        self.optimizer_D.step()
-        for p in self.discriminator.parameters():
-            p.data.clamp_(-0.01, 0.01)
-
-        log_dict = {"D": loss_D, "D-real-out": D_x, "D-fake-out": D_G_x}
-
-        # ------------------ generator
-        if iteration % self.train_generator_every == 0:
-            self.optimizer_G.zero_grad(set_to_none=True)
+        do_train_generator = iteration % self.train_generator_every == 0
+        # when gradient penalty is used and `opt_hat` is the same in consecutive
+        # critic/generator updates, critic and generator loss share parts of the
+        # same computational graph, meaning `retain_graph` must be True on the
+        # first of the two loss.backward()
+        log_dict = self.train_critic(opt, opt_hat, do_train_generator)
+        if do_train_generator:
             subopt_mask = torch.cat([low["seg"], high["seg"]])
             subopt_mask = subopt_mask.to(self.device, non_blocking=True)
-
-            loss_G = self.gan_loss_w * -self.loss_GAN(self.discriminator(opt_hat))
-            loss_sim = self.sim_loss_w * self.loss_similarity(opt_hat, subopt)
-            loss_hu = self.hu_loss_w * self.loss_HU(opt_hat, subopt_mask)
-            if torch.isnan(loss_hu):
-                loss_hu = torch.zeros(1, device=self.device)
-
-            # full generator loss
-            full_loss_G: Tensor = loss_G + loss_sim + loss_hu
-            full_loss_G.backward()
-            self.optimizer_G.step()
-
-            log_dict.update(
-                {"G": loss_G, "G-full": full_loss_G, "sim": loss_sim, "HU": loss_hu}
-            )
-
-        for tag in list("GD"):  # update learning rate schedulers, if any
-            if (scheduler := getattr(self, f"lr_scheduler_{tag}")) is not None:
-                scheduler.step()
+            log_dict |= self.train_generator(opt_hat, subopt, subopt_mask)
 
         # ------------------ logging
         if iteration % self.log_every == 0:
@@ -152,9 +179,7 @@ class Trainer:
             )
 
         if iteration % self.log_images_every == 0:
-            # method = self.wandb_logger.multiple
-            method = self.logger_interface
-            method(
+            self.logger_interface(
                 patches,
                 [None, *opt_hat.chunk(2)],
                 [None, *attenuation.chunk(2)],
@@ -169,7 +194,7 @@ class Trainer:
         profiler: Optional[profiler.profile] = None,
     ):
         self.generator.train()
-        self.discriminator.train()
+        self.critic.train()
         # start batchgenerator's async augmenters
         self.retrieve_batch_size(train_loaders[ScanType.OPT.value], "train")
         self._manage_augmenters([train_loaders, val_loaders], "start")
@@ -198,13 +223,18 @@ class Trainer:
         self.logger_interface.end_hook()
 
     def validate(self, val_loaders: Dict[int, BGenAugmenter], train_iteration: int):
-        self.discriminator.eval()
+        self.critic.eval()
         self.generator.eval()
         self.retrieve_batch_size(val_loaders[ScanType.OPT.value], "val")
 
-        loss_sim, loss_G, loss_real_D, loss_fake_D = torch.zeros(
-            4, dtype=torch.float32, device=self.device
-        )
+        (
+            loss_sim,
+            loss_G,
+            loss_real_D,
+            loss_fake_D,
+            D_real_tot,
+            D_fake_tot,
+        ) = torch.zeros(6, dtype=torch.float32, device=self.device)
         loggable = []
 
         with torch.no_grad():
@@ -218,11 +248,17 @@ class Trainer:
                 sample_hat, attenuation = None, None
 
                 if scan_type_enum == ScanType.OPT:
-                    loss_real_D -= self.loss_GAN(self.discriminator(sample))
+                    D_real = self.critic(sample)
+
+                    loss_real_D -= self.loss_GAN(D_real)
+                    D_real_tot += D_real.sum()
                 else:
                     attenuation = self.generator(sample)
                     sample_hat = sample - attenuation
-                    batch_loss_G = self.loss_GAN(self.discriminator(sample_hat))
+                    D_fake = self.critic(sample_hat)
+                    batch_loss_G = self.loss_GAN(D_fake)
+
+                    D_fake_tot += D_fake.sum()
                     loss_fake_D += batch_loss_G
                     loss_G -= batch_loss_G
                     loss_sim += self.loss_similarity(sample_hat, sample)
@@ -231,9 +267,7 @@ class Trainer:
                     loggable.append([batch, sample_hat, attenuation])
                     if len(loggable) == len(ScanType):
                         patches, reconstructions, attenuations = list(zip(*loggable))
-                        # method = self.wandb_logger.multiple
-                        method = self.logger_interface
-                        method(
+                        self.logger_interface(
                             patches,
                             list(reconstructions),
                             list(attenuations),
@@ -245,22 +279,14 @@ class Trainer:
                             del s, r, a
                         loggable = None
 
-        self.discriminator.train()
+        self.critic.train()
         self.generator.train()
 
-        # assumes dataloaders with same batch size
-        n_opt = self.val_iterations * self.val_bs
-        n_subopt = 2 * n_opt
-
         val_loss = {
-            "D": (loss_real_D + loss_fake_D).mean(),
-            "D-real": loss_real_D / n_opt,
-        } | {
-            k: v / n_subopt
-            for k, v in zip(
-                ["sim", "D-fake", "G"],
-                [loss_sim, loss_fake_D, loss_G],
-            )
+            "D": (loss_real_D + loss_fake_D) / self.val_tot_samples,
+            "G": loss_G / self.val_subopt_samples,
+            "sim": loss_sim / self.val_subopt_samples,
+            "D-real-fake-delta": (D_real_tot - D_fake_tot) / self.val_tot_samples,
         }
         self.logger_interface.logger.log_loss(val_loss, train_iteration, "validation")
 
@@ -281,10 +307,11 @@ class Trainer:
             el = getattr(self, attr, None)
             state[attr] = el if el is None else el.state_dict()
         torch.save(state, ckpt_path)
+        logger.info("Checkpoint iteration %d", iteration)
 
     def load_checkpoint(self, ckpt_path: Union[Path, str]):
         ckpt_path = Path(ckpt_path)
-        if ckpt_path.is_file():
+        if ckpt_path.is_file():  # check if checkpoint exists
             logger.info("Resuming run from '%s'", str(ckpt_path))
             checkpoint = torch.load(ckpt_path, map_location=torch.device("cpu"))
             for k, v in checkpoint.items():
@@ -308,7 +335,6 @@ class Trainer:
                     else:
                         augmenter._finish()
 
-    # NOTE only val_bs used atm :/
     def retrieve_batch_size(self, augmenter: BGenAugmenter, stage: str):
         attr_bs = f"{stage}_bs"
         if getattr(self, attr_bs, None) is None:
@@ -326,3 +352,8 @@ class Trainer:
                 getattr(self, f"{stage}_iterations")
                 * getattr(self, f"{stage}_it_patches"),
             )
+            if stage == "val":
+                # assume dataloaders with same batch size across classes
+                self.val_opt_samples = self.val_iterations * self.val_bs
+                self.val_subopt_samples = 2 * self.val_opt_samples
+                self.val_tot_samples = self.val_opt_samples + self.val_subopt_samples

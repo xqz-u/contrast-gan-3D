@@ -68,7 +68,7 @@ class MultiThreadedLogger(LoggerInterface):
         iteration: int,
         stage: str,
     ):
-        # free from GPU before passing reference onto thread
+        # make sure to free GPU before passing reference onto thread
         reconstructions[1] = to_CPU(reconstructions[1])
         reconstructions[2] = to_CPU(reconstructions[2])
         attenuations[1] = to_CPU(attenuations[1])

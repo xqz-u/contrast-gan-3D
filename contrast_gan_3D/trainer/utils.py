@@ -2,6 +2,7 @@ import importlib
 import os
 import sys
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type, Union
 
@@ -139,11 +140,12 @@ def update_experiment_config(vars: dict) -> dict:
                 "betas",
                 "milestones",
                 "lr_gamma",
+                "weight_clip",
                 "max_HU_delta",
                 "desired_HU_bounds",
                 "HU_norm_range",
                 "generator_args",
-                "discriminator_args",
+                "critic_args",
                 "train_patch_size",
                 "train_batch_size",
                 "val_patch_size",
@@ -160,17 +162,15 @@ def update_experiment_config(vars: dict) -> dict:
                 "log_every",
                 "log_images_every",
                 "num_workers",
-                "generator",
-                "discriminator",
             ]
         }
         | {
-            k: object_name(vars[k])
+            k: object_name(o if not isinstance((o := vars[k]), partial) else o.func)
             for k in [
-                "generator_optim",
-                "generator_lr_scheduler",
-                "discriminator_optim",
-                "discriminator_lr_scheduler",
+                "generator_optim_class",
+                "generator_lr_scheduler_class",
+                "critic_optim_class",
+                "critic_lr_scheduler_class",
             ]
         }
         | {k: str(vars[k]) for k in ["train_transform", "scaler", "logger_interface"]}

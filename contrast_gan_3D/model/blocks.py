@@ -28,7 +28,7 @@ class ConvBlock3D(nn.Module):
             channels_out,
             kernel_size,
             stride=stride,
-            bias=norm_layer not in [nn.BatchNorm3d, nn.GroupNorm],
+            bias=norm_layer == nn.Identity,
             padding_mode=padding_mode,
             padding=padding,
             **args
@@ -40,7 +40,7 @@ class ConvBlock3D(nn.Module):
         return self.activation_fn(self.normalization(self.conv(x)))
 
 
-# NOTE not customizing activation_fn and normalization_layer atm
+# NOTE not customizing `activation_fn` and `normalization_layer` atm
 class ResNetBlock3D(nn.Module):
     def __init__(
         self,

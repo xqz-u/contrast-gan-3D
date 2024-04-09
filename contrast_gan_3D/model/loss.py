@@ -11,7 +11,7 @@ from contrast_gan_3D.alias import Shape3D
 class StableStd(torch.autograd.Function):
     @staticmethod
     def forward(ctx, tensor: Tensor) -> Tensor:
-        assert tensor.numel() > 1
+        # assert tensor.numel() > 1
         ctx.tensor = tensor.detach()
         res = torch.std(tensor).detach()
         ctx.result = res.detach()
@@ -20,7 +20,7 @@ class StableStd(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: Tensor) -> Tensor:
         tensor = ctx.tensor.detach()
-        assert tensor.numel() > 1
+        # assert tensor.numel() > 1
         result = ctx.result.detach()
         return (
             (2.0 / (tensor.numel() - 1.0))
@@ -35,7 +35,7 @@ class ZNCCLoss(nn.Module):
         self.stablestd = StableStd.apply
 
     def forward(self, source: Tensor, target: Tensor) -> Tensor:
-        assert source.shape == target.shape, "Input shapes are different"
+        # assert source.shape == target.shape, "Input shapes are different"
 
         cc = ((source - source.mean()) * (target - target.mean())).mean()
         std = self.stablestd(source) * self.stablestd(target)
@@ -69,6 +69,8 @@ class HULoss(nn.Module):
         return loss.sum() / mask.sum()  # MSE over unmasked voxels
 
 
+# critic goal:
+# max E[critic(real)] - E[critic(fake)] <-> min E[critic(fake)] - E[critic(real)]
 class WassersteinLoss(nn.Module):
     @staticmethod
     def forward(fake: Tensor, real: Optional[Tensor] = None) -> Tensor:

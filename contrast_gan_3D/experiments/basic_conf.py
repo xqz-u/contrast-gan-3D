@@ -1,5 +1,6 @@
+from functools import partial
+
 import numpy as np
-import torch
 from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.spatial_transforms import SpatialTransform_2
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
@@ -14,16 +15,9 @@ from contrast_gan_3D.trainer.logger.LoggerInterface import MultiThreadedLogger
 from contrast_gan_3D.trainer.logger.WandbLogger import WandbLogger
 from contrast_gan_3D.utils import geometry as geom
 
-# **** NOTE **** change GPU index here
-device_str = "cpu"
-if torch.cuda.is_available():
-    torch.cuda.set_device(1)
-    device_str = f"cuda:{torch.cuda.current_device()}"
-device = torch.device(device_str)
-
 train_iterations = int(1e4)
 val_iterations = 10
-train_generator_every = 5
+train_generator_every = 5  # from WGAN paper
 # seed = DEFAULT_SEED
 seed = None
 checkpoint_every = int(1e3)
@@ -36,6 +30,7 @@ lr = 2e-4
 betas = (5e-1, 0.999)
 milestones = list(map(int, [6e3, 8e3]))
 lr_gamma = 0.1
+weight_clip = 0.01  # from WGAN paper
 
 # HU loss & details
 max_HU_delta = 600
@@ -51,25 +46,21 @@ generator_args = {
     "n_updownsample_blocks": 2,
     "n_feature_maps": 16,
 }
-generator = ResnetGenerator(**generator_args).to(device)
-
-generator_optim = Adam(generator.parameters(), lr=lr, betas=betas)
-generator_lr_scheduler = MultiStepLR(
-    generator_optim, milestones=milestones, gamma=lr_gamma
+generator_class = partial(ResnetGenerator, **generator_args)
+generator_optim_class = partial(Adam, lr=lr, betas=betas)
+generator_lr_scheduler_class = partial(
+    MultiStepLR, milestones=milestones, gamma=lr_gamma
 )
 
-discriminator_args = {
+critic_args = {
     "channels_in": 1,
     "channels_out": 1,
     "discriminator_depth": 3,
     "n_feature_maps": 16,
 }
-discriminator = PatchGANDiscriminator(**discriminator_args).to(device)
-
-discriminator_optim = Adam(discriminator.parameters(), lr=lr, betas=betas)
-discriminator_lr_scheduler = MultiStepLR(
-    discriminator_optim, milestones=milestones, gamma=lr_gamma
-)
+critic_class = partial(PatchGANDiscriminator, **critic_args)
+critic_optim_class = partial(Adam, lr=lr, betas=betas)
+critic_lr_scheduler_class = partial(MultiStepLR, milestones=milestones, gamma=lr_gamma)
 
 # ------------ DATA ------------
 cval_folds = 5

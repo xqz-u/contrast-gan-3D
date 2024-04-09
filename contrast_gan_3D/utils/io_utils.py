@@ -93,7 +93,7 @@ def load_sitk_image(
 
     image = image.astype(np.int16)
     # constrain the scan to lie in [MIN_HU, MAX_HU]
-    if (diff := image.min() - MIN_HU ) >= abs(MIN_HU):
+    if (diff := image.min() - MIN_HU) >= abs(MIN_HU):
         image -= diff
     image = image.clip(MIN_HU, MAX_HU)
 
@@ -176,3 +176,18 @@ def load_h5_image(
     group = f["ccta"]
     ccta = group["ccta"]
     return (ccta, hd5_group_attrs_flat(group), f)
+
+
+def to_itksnap_volume(
+    data: np.ndarray,
+    offset: np.ndarray,
+    spacing: np.ndarray,
+    savepath: Union[str, Path],
+):
+    im = sitk.GetImageFromArray(data)
+    im.SetOrigin(offset)
+    im.SetSpacing(spacing)
+    savepath = Path(savepath)
+    if not str(savepath).endswith(".mhd"):
+        savepath = savepath.with_suffix(".mhd")
+    sitk.WriteImage(im, savepath, useCompression=True)

@@ -14,9 +14,10 @@ from wandb.sdk.lib.runid import generate_id
 
 import wandb
 from contrast_gan_3D import utils
-from contrast_gan_3D.config import LOGS_DIR
+from contrast_gan_3D.config import CHECKPOINTS_DIR, LOGS_DIR
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.model.loss import HULoss
+from contrast_gan_3D.model.utils import count_parameters
 from contrast_gan_3D.trainer import utils as train_utils
 from contrast_gan_3D.trainer.Trainer import Trainer
 from contrast_gan_3D.utils.logging_utils import create_logger
@@ -26,7 +27,7 @@ matplotlib.use("agg")  # avoid MatplotLib warning about figures in threads
 logger = create_logger(name=__name__)
 
 
-def create_profiler(profiler_dir: Path) -> torch.profiler.profile:
+def create_profiler(profiler_dir: Path, device: torch.device) -> torch.profiler.profile:
     # hard-set
     global train_iterations, val_iterations, validate_every, checkpoint_every, log_every, log_images_every
     train_iterations, val_iterations = 61, 3
@@ -50,6 +51,7 @@ def create_profiler(profiler_dir: Path) -> torch.profiler.profile:
 def main(
     wandb_project: str,
     wandb_entity: str,
+    device_idx: Optional[int],
     run_id: Optional[str] = None,
     profiler_dir: Optional[Path] = None,
 ):
@@ -88,12 +90,11 @@ def main(
         else:
             logger.info("OLD run_id: '%s'", run_id)
 
+        device = utils.set_GPU(device_idx)
+
         profiler = None
         if profiler_dir is not None:
-            profiler = create_profiler(Path(f"{str(profiler_dir)}_{i}"))
-
-        experiment_config = train_utils.update_experiment_config(globals())
-        pprint(experiment_config)
+            profiler = create_profiler(Path(f"{str(profiler_dir)}_{i}"), device)
 
         trainer = Trainer(
             train_iterations,
@@ -102,18 +103,30 @@ def main(
             train_generator_every,
             log_every,
             log_images_every,
-            generator,
-            discriminator,
-            generator_optim,
-            discriminator_optim,
+            generator_class,
+            critic_class,
+            generator_optim_class,
+            critic_optim_class,
             # train_bantch_size * 2 == [low batch, high batch]
             HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
             logger_interface,
-            run_id,
-            generator_lr_scheduler=generator_lr_scheduler,
-            discriminator_lr_scheduler=discriminator_lr_scheduler,
+            CHECKPOINTS_DIR / f"{run_id}.pt",
+            weight_clip=weight_clip,
+            generator_lr_scheduler_class=critic_lr_scheduler_class,
+            critic_lr_scheduler_class=critic_lr_scheduler_class,
             device=device,
             checkpoint_every=checkpoint_every,
+        )
+
+        experiment_config = train_utils.update_experiment_config(globals()) | {
+            "generator": trainer.generator,
+            "critic": trainer.critic,
+        }
+        pprint(experiment_config)
+        logger.info(
+            "Critic size: %d Generator size: %d",
+            count_parameters(trainer.critic),
+            count_parameters(trainer.generator),
         )
 
         with wandb.init(
@@ -142,7 +155,7 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument("--wandb-project", type=str, default="contrast-gan-3D")
-    parser.add_argument("--wandb-entity", type=str, default="xqz-u")
+    parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument(
         "--wandb-run-id",
         type=str,
@@ -152,6 +165,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--profiler-dir", type=Path, default=None, help="torch-tb-profiler logs dir."
     )
+    parser.add_argument("--device", type=int, default=None, help="CUDA device index")
     args = parser.parse_args()
 
     override_module = args.conf_overrides
@@ -163,6 +177,7 @@ if __name__ == "__main__":
     main(
         args.wandb_project,
         args.wandb_entity,
+        args.device,
         run_id=args.wandb_run_id,
         profiler_dir=args.profiler_dir,
     )
