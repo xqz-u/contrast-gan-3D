@@ -10,9 +10,8 @@ class PatchGANDiscriminator(nn.Module):
     def __init__(
         self,
         channels_in: int,
-        channels_out: int,
+        init_channels_out: int,
         discriminator_depth: int,
-        n_feature_maps: int,
         kernel_size: int = 4,
         padding: int = 1,
         norm_layer: nn.Module = nn.BatchNorm3d,
@@ -25,7 +24,7 @@ class PatchGANDiscriminator(nn.Module):
                 "first",
                 ConvBlock3D(
                     channels_in,
-                    n_feature_maps,
+                    init_channels_out,
                     kernel_size,
                     stride=stride,
                     padding=padding,
@@ -35,14 +34,12 @@ class PatchGANDiscriminator(nn.Module):
                 ),
             )
         ]
-        # gradually increase the number of filters:
-        # in_ = n_feature_maps, 2*n_feature_maps, 4*feature_maps, 8*feature_maps
-        # each out_ has twice the filters as corresponding in_, max n of filters
-        # capped at 8*n_feature_maps
+        # gradually increase the number of filters, and decrease spatial extent:
+        # the critic looks at increasingly finer feature maps
         middle = []
         for n in range(discriminator_depth):
-            in_ = min(2**n, 8) * n_feature_maps
-            out_ = min(2 ** (n + 1), 8) * n_feature_maps
+            in_ = min(2**n, 8) * init_channels_out
+            out_ = min(2 ** (n + 1), 8) * init_channels_out
             middle.append(
                 ConvBlock3D(
                     in_,
@@ -61,7 +58,7 @@ class PatchGANDiscriminator(nn.Module):
                 "last",
                 nn.Conv3d(
                     out_,
-                    channels_out,
+                    1,
                     kernel_size=kernel_size,
                     stride=1,
                     padding=padding,

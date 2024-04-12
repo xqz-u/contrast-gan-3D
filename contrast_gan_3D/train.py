@@ -118,16 +118,16 @@ def main(
             checkpoint_every=checkpoint_every,
         )
 
+        critic_size = count_parameters(trainer.critic)
+        generator_size = count_parameters(trainer.generator)
         experiment_config = train_utils.update_experiment_config(globals()) | {
             "generator": trainer.generator,
             "critic": trainer.critic,
+            "generator_size": generator_size,
+            "critic_size": critic_size,
         }
         pprint(experiment_config)
-        logger.info(
-            "Critic size: %d Generator size: %d",
-            count_parameters(trainer.critic),
-            count_parameters(trainer.generator),
-        )
+        logger.info("Critic size: %d Generator size: %d", critic_size, generator_size)
 
         with wandb.init(
             id=run_id,

@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Optional, Union
 
 import torch
 from torch import Tensor, nn
@@ -30,8 +30,9 @@ def wgan_gradient_penalty(
     return lambda_ * (gradients_norm - 1).square().mean()
 
 
-# simplified version of
-# https://pytorch.org/docs/stable/generated/torch.nn.Conv3d.html#torch.nn.Conv3d
+# simplified versions of
+# https://pytorch.org/docs/stable/generated/torch.nn.Conv3d.html
+# https://pytorch.org/docs/stable/generated/torch.nn.ConvTranspose3d.html
 def convolution_output_shape(
     dims: List[int],
     c_out: int,
@@ -39,19 +40,49 @@ def convolution_output_shape(
     padding: int,
     stride: int,
     dilation: int = 1,
+    transpose_output_padding: Optional[int] = None,
 ) -> List[int]:
     formula = lambda x: int(
         (x + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1
     )
-    return [c_out] + [formula(d) for d in dims[1:]]  # assumes first dim is channels_in
+    formula_transp = lambda x: int(
+        (x - 1) * stride
+        - 2 * padding
+        + dilation * (kernel_size - 1)
+        + transpose_output_padding
+        + 1
+    )
+    f = formula_transp if transpose_output_padding is not None else formula
+    return [c_out] + [f(d) for d in dims[1:]]  # assumes first dim is channels_in
 
 
-def count_parameters(model: nn.Module) -> int:
-    # tot = 0
-    # for n, p in model.named_parameters():
-    #     print(n)
-    #     if p.requires_grad:
-    #         tot += p.numel()
-    #         print(p.numel())
-    # return tot
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def print_convolution_filters_shape(model: nn.Module, input_shape: torch.Tensor):
+    print(f"Input shape: {list(input_shape)}")
+    for n, m in model.named_modules():
+        if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
+            kwargs = {}
+            if isinstance(m, nn.ConvTranspose3d):
+                kwargs = {"transpose_output_padding": m.output_padding[0]}
+            input_shape = convolution_output_shape(
+                input_shape,
+                m.out_channels,
+                m.kernel_size[0],
+                m.padding[0],
+                m.stride[0],
+                **kwargs,
+            )
+            bias_str = "" if m.bias is None else f" bias: {str(list(m.bias.shape))}"
+            params_str = f"# params: {count_parameters(m)}"
+            print(
+                f"{n:<40} -> {str(input_shape):<22} {params_str:<20} weight: {str(list(m.weight.shape)):<20}{bias_str}"
+            )
+
+
+def count_parameters(model: nn.Module, print:bool=False) -> int:
+    tot = 0
+    for n, p in model.named_parameters():
+        if p.requires_grad:
+            tot += p.numel()
+            if print:
+                print(n, p.numel())
+    return tot

@@ -115,11 +115,14 @@ class WandbLogger:
         mappable = cm.ScalarMappable(norm=norm, cmap=self.cmap)
         cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
         cbar.set_ticks(np.linspace(low, high, 5))
-        return WandbLogger.create_grid_figure(attn, fig)
+        return WandbLogger.create_grid_figure(attn, fig, tight=False)
 
     @staticmethod
     def create_grid_figure(
-        slices: Union[Tensor, np.ndarray], fig: Optional[Figure] = None, **grid_args
+        slices: Union[Tensor, np.ndarray],
+        fig: Optional[Figure] = None,
+        tight: bool = True,
+        **grid_args,
     ) -> Figure:
         if isinstance(slices, np.ndarray):
             slices = torch.from_numpy(slices)
@@ -131,7 +134,8 @@ class WandbLogger:
             ax, *_ = fig.get_axes()
         ax.imshow(grid.permute(1, 2, 0))
         ax.set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
-        fig.tight_layout()
+        if tight:
+            fig.tight_layout()
         return fig
 
     def log_wandb_image(

@@ -42,9 +42,9 @@ logger_interface = WandbLogger(scaler, rng=np.random.default_rng(seed=seed))
 logger_interface = MultiThreadedLogger(logger_interface)
 
 generator_args = {
-    "n_resnet_blocks": 6,
+    "n_resnet_blocks": 4,
     "n_updownsample_blocks": 2,
-    "n_feature_maps": 16,
+    "init_channels_out": 16,
 }
 generator_class = partial(ResnetGenerator, **generator_args)
 generator_optim_class = partial(Adam, lr=lr, betas=betas)
@@ -54,9 +54,8 @@ generator_lr_scheduler_class = partial(
 
 critic_args = {
     "channels_in": 1,
-    "channels_out": 1,
+    "init_channels_out": 8,
     "discriminator_depth": 3,
-    "n_feature_maps": 16,
 }
 critic_class = partial(PatchGANDiscriminator, **critic_args)
 critic_optim_class = partial(Adam, lr=lr, betas=betas)

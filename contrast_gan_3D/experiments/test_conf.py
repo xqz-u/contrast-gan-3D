@@ -13,4 +13,4 @@ log_every, log_images_every = 10, 15
 
 train_batch_size = 3  # 9 tot
 val_batch_size = 2  # 6 tot
-num_workers = (train_batch_size * 2, val_batch_size * 2)  # (train, validation)
+num_workers = (train_batch_size, val_batch_size)  # (train, validation)

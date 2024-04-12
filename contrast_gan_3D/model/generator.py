@@ -1,4 +1,4 @@
-from typing import Optional, OrderedDict, Tuple
+from typing import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -19,7 +19,7 @@ class ResnetGenerator(nn.Module):
         self,
         n_resnet_blocks: int,
         n_updownsample_blocks: int,
-        n_feature_maps: int,
+        init_channels_out: int,
         resnet_dropout_prob: float = 0.0,
         resnet_padding_mode: str = "zeros",
     ):
@@ -32,11 +32,11 @@ class ResnetGenerator(nn.Module):
             "padding_mode": "reflect",
             "padding": 3,
         }
-        model = [("first", ConvBlock3D(1, n_feature_maps, **first_and_last_common))]
+        model = [("first", ConvBlock3D(1, init_channels_out, **first_and_last_common))]
 
         downsampling = []
         for i in range(n_updownsample_blocks):
-            dim_in = n_feature_maps * 2**i
+            dim_in = init_channels_out * 2**i
             dim_out = dim_in * 2
             downsampling.append(
                 ConvBlock3D(dim_in, dim_out, kernel_size=3, stride=2, padding=1)
@@ -50,12 +50,13 @@ class ResnetGenerator(nn.Module):
                 dropout_prob=resnet_dropout_prob,
                 padding_mode=resnet_padding_mode,
             )
-        ] * n_resnet_blocks
-        model.append(("resnet", nn.Sequential(*resnet_blocks)))
+            for _ in range(n_resnet_blocks)
+        ]
+        model.append(("resnet_backbone", nn.Sequential(*resnet_blocks)))
 
         upsampling = []
         for i in range(n_updownsample_blocks, 0, -1):
-            dim_in = n_feature_maps * 2**i
+            dim_in = init_channels_out * 2**i
             dim_out = int(dim_in / 2)
             upsampling.append(
                 ConvBlock3D(
@@ -72,7 +73,7 @@ class ResnetGenerator(nn.Module):
         model.append(
             (
                 "last_conv",
-                nn.Conv3d(n_feature_maps, 1, **first_and_last_common, bias=True),
+                nn.Conv3d(init_channels_out, 1, **first_and_last_common, bias=True),
             )
         )
         model.append(("tanh", nn.Tanh()))

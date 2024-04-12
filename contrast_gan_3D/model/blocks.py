@@ -40,37 +40,33 @@ class ConvBlock3D(nn.Module):
         return self.activation_fn(self.normalization(self.conv(x)))
 
 
-# NOTE not customizing `activation_fn` and `normalization_layer` atm
 class ResNetBlock3D(nn.Module):
     def __init__(
         self,
         channels_in: int,
         channels_out: int,
-        n_feature_maps: int = 1,
         kernel_size: int = 3,
         dropout_prob: float = 0.0,
         padding_mode: str = "zeros",
     ):
         super().__init__()
-        padding_amount = 1  # for residual connection to work
-        self.conv0 = ConvBlock3D(
+        padding_amount = 1  # one way to make residual connection to work
+        self.block0 = ConvBlock3D(
             channels_in,
-            n_feature_maps,
-            kernel_size,
-            padding_mode=padding_mode,
-            padding=padding_amount,
-        )
-        self.dropout = nn.Identity()
-        if dropout_prob > 0:
-            self.dropout = nn.Dropout(p=dropout_prob)
-        self.conv1 = ConvBlock3D(
-            n_feature_maps,
             channels_out,
             kernel_size,
             padding_mode=padding_mode,
             padding=padding_amount,
             activation_fn=nn.Identity,
         )
+        self.dropout = nn.Dropout(p=dropout_prob) if dropout_prob > 0 else nn.Identity()
+        self.block1 = ConvBlock3D(
+            channels_out,
+            channels_out,
+            kernel_size,
+            padding_mode=padding_mode,
+            padding=padding_amount,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.conv1(self.dropout(self.conv0(x)))  # with skip connection
+        return x + self.block1(self.dropout(self.block0(x)))  # with skip connection

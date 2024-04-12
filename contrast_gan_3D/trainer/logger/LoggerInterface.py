@@ -20,6 +20,7 @@ class LoggerInterface:
         batches: List[dict],
         reconstructions: List[Optional[Tensor]],
         attenuations: List[Optional[Tensor]],
+        scan_types: List[ScanType],
         iteration: int,
         stage: str,
     ):
@@ -29,7 +30,6 @@ class LoggerInterface:
         ...
 
 
-# TODO thread exception handling
 @dataclass
 class SingleThreadedLogger(LoggerInterface):
     def __call__(
@@ -37,11 +37,12 @@ class SingleThreadedLogger(LoggerInterface):
         batches: List[dict],
         reconstructions: List[Optional[Tensor]],
         attenuations: List[Optional[Tensor]],
+        scan_types: List[ScanType],
         iteration: int,
         stage: str,
     ):
         for batch, scan_type, recon, attn_map in zip(
-            batches, ScanType, reconstructions, attenuations
+            batches, scan_types, reconstructions, attenuations
         ):
             buffer = self.logger(
                 batch["data"],
@@ -65,14 +66,14 @@ class MultiThreadedLogger(LoggerInterface):
         batches: List[dict],
         reconstructions: List[Optional[Tensor]],
         attenuations: List[Optional[Tensor]],
+        scan_types: List[ScanType],
         iteration: int,
         stage: str,
     ):
-        # make sure to free GPU before passing reference onto thread
-        reconstructions[1] = to_CPU(reconstructions[1])
-        reconstructions[2] = to_CPU(reconstructions[2])
-        attenuations[1] = to_CPU(attenuations[1])
-        attenuations[2] = to_CPU(attenuations[2])
+        # detach from GPU to avoid threads holding references
+        for cont in [reconstructions, attenuations]:
+            for i in range(len(cont)):
+                cont[i] = to_CPU(cont[i])
 
         t = Thread(
             target=SingleThreadedLogger.__call__,
@@ -81,6 +82,7 @@ class MultiThreadedLogger(LoggerInterface):
                 batches,
                 reconstructions,
                 attenuations,
+                scan_types,
                 iteration,
                 stage,
             ),

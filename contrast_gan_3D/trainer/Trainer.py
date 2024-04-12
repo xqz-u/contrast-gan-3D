@@ -25,8 +25,7 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 logger = create_logger(name=__name__)
 
 # TODO don't overwrite checkpoints, rather save some save_checkpoint_every iters
-# TODO try bigger generator, smaller critic?
-# TODO explore conditional GAN
+# TODO exception handling LoggerInterface
 
 # TODO wrong validation metrics ?
 
@@ -183,6 +182,7 @@ class Trainer:
                 patches,
                 [None, *opt_hat.chunk(2)],
                 [None, *attenuation.chunk(2)],
+                list(ScanType),
                 iteration,
                 "train",
             )
@@ -209,6 +209,7 @@ class Trainer:
 
             if (
                 self.checkpoint_every is not None
+                and iteration != 0
                 and iteration % self.checkpoint_every == 0
             ):
                 self.save_checkpoint(self.checkpoint_path, iteration)
@@ -218,7 +219,8 @@ class Trainer:
 
         if profiler:
             profiler.stop()
-        self.save_checkpoint(self.checkpoint_path, self.train_iterations)
+        if self.checkpoint_every is not None:
+            self.save_checkpoint(self.checkpoint_path, self.train_iterations)
         self._manage_augmenters([train_loaders, val_loaders], "end")
         self.logger_interface.end_hook()
 
@@ -245,7 +247,6 @@ class Trainer:
             ):
                 batch = next(val_loaders[scan_type_enum.value])
                 sample = batch["data"].to(self.device, non_blocking=True)
-                sample_hat, attenuation = None, None
 
                 if scan_type_enum == ScanType.OPT:
                     D_real = self.critic(sample)
@@ -263,14 +264,15 @@ class Trainer:
                     loss_G -= batch_loss_G
                     loss_sim += self.loss_similarity(sample_hat, sample)
 
-                if i == 0:
+                if i == 0 and scan_type_enum != ScanType.OPT:
                     loggable.append([batch, sample_hat, attenuation])
-                    if len(loggable) == len(ScanType):
+                    if len(loggable) == (len(ScanType) - 1):
                         patches, reconstructions, attenuations = list(zip(*loggable))
                         self.logger_interface(
                             patches,
                             list(reconstructions),
                             list(attenuations),
+                            list(ScanType)[1:],
                             train_iteration,
                             "validation",
                         )
