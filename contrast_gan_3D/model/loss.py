@@ -69,8 +69,6 @@ class HULoss(nn.Module):
         return loss.sum() / mask.sum()  # MSE over unmasked voxels
 
 
-# critic goal:
-# max E[critic(real)] - E[critic(fake)] <-> min E[critic(fake)] - E[critic(real)]
 class WassersteinLoss(nn.Module):
     @staticmethod
     def forward(fake: Tensor, real: Optional[Tensor] = None) -> Tensor:

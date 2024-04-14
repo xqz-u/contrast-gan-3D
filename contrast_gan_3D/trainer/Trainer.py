@@ -20,19 +20,22 @@ from contrast_gan_3D.trainer.logger.LoggerInterface import (
     MultiThreadedLogger,
     SingleThreadedLogger,
 )
+from contrast_gan_3D.trainer.utils import find_latest_checkpoint
 from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO don't overwrite checkpoints, rather save some save_checkpoint_every iters
-# TODO exception handling LoggerInterface
+# TODO evaluation pipeline
+# TODO reproduce Roel's work so it's comparable in the evaluation
+# TODO try better ResNet blocks + initialize from pretrained
 
-# TODO wrong validation metrics ?
+# TODO exception handling LoggerInterface
 
 # TODO use fold index to group cval runs belonging to same experiment together
 # TODO save folds configuration so that restarting a wandb.run is guaranteed to
 #      use the same train data as before it was stopped / save it into wandb itself!
 
+# TODO wrong validation metrics ?
 # TODO AMP, DDP ?
 
 
@@ -51,7 +54,7 @@ class Trainer:
         critic_optim_class: partial,
         hu_loss_instance: nn.Module,
         logger_interface: Union[SingleThreadedLogger, MultiThreadedLogger],
-        checkpoint_path: Union[str, Path],
+        checkpoint_dir: Union[str, Path],
         device: torch.device,
         weight_clip: Optional[float] = None,
         generator_lr_scheduler_class: Optional[partial] = None,
@@ -96,11 +99,11 @@ class Trainer:
         self.logger_interface = logger_interface
 
         self.checkpoint_every = checkpoint_every
-        self.checkpoint_path = Path(checkpoint_path)
-        self.checkpoint_path.parent.mkdir(exist_ok=True, parents=True)
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
 
         self.iteration = 0
-        self.load_checkpoint(self.checkpoint_path)
+        self.load_checkpoint(find_latest_checkpoint(self.checkpoint_dir))
 
     def train_critic(
         self, real: Tensor, reconstructions: Tensor, retain_graph: bool
@@ -111,6 +114,7 @@ class Trainer:
         # detach() avoids computing gradients wrt generator's output
         fake_logits: Tensor = self.critic(reconstructions.detach())
 
+        # critic goal: max E[critic(real)] - E[critic(fake)] <-> min E[critic(fake)] - E[critic(real)]
         loss_critic: Tensor = self.gan_loss_w * self.loss_GAN(fake_logits, real_logits)
         if self.weight_clip is None:
             loss_critic += wgan_gradient_penalty(
@@ -129,20 +133,20 @@ class Trainer:
         if self.lr_scheduler_D is not None:
             self.lr_scheduler_D.step()
 
-        # log_dict = {"D": loss_D, "D-real-out": D_x, "D-fake-out": D_G_x}
-        D_real_rep = real_logits.repeat((2,) + (1,) * len(real_logits.shape[1:]))
-        return {"D": loss_critic, "D-real-fake-delta": D_real_rep - fake_logits}
+        real_logits = real_logits.repeat((2,) + (1,) * len(real_logits.shape[1:]))
+        return {"D": loss_critic, "D-real-fake-delta": real_logits - fake_logits}
 
     def train_generator(
-        self, reconstructions: Tensor, inputs: Tensor, inputs_masks: Tensor
+        self, inputs: Tensor, reconstructions: Tensor, centerlines_masks: Tensor
     ) -> Dict[str, Tensor]:
         self.optimizer_G.zero_grad(set_to_none=True)
 
+        # generator goal: max E[critic(fake)] <-> min -E[critic(fake)]
         loss_G = self.gan_loss_w * -self.loss_GAN(self.critic(reconstructions))
         loss_sim = self.sim_loss_w * self.loss_similarity(reconstructions, inputs)
-        loss_hu = self.hu_loss_w * self.loss_HU(reconstructions, inputs_masks)
-
+        loss_hu = self.hu_loss_w * self.loss_HU(reconstructions, centerlines_masks)
         full_loss_G: Tensor = loss_G + loss_sim + loss_hu
+
         full_loss_G.backward()
         self.optimizer_G.step()
         if self.lr_scheduler_G is not None:
@@ -169,7 +173,7 @@ class Trainer:
         if do_train_generator:
             subopt_mask = torch.cat([low["seg"], high["seg"]])
             subopt_mask = subopt_mask.to(self.device, non_blocking=True)
-            log_dict |= self.train_generator(opt_hat, subopt, subopt_mask)
+            log_dict |= self.train_generator(subopt, opt_hat, subopt_mask)
 
         # ------------------ logging
         if iteration % self.log_every == 0:
@@ -212,7 +216,7 @@ class Trainer:
                 and iteration != 0
                 and iteration % self.checkpoint_every == 0
             ):
-                self.save_checkpoint(self.checkpoint_path, iteration)
+                self.save_checkpoint(iteration)
 
             if profiler:
                 profiler.step()
@@ -220,7 +224,7 @@ class Trainer:
         if profiler:
             profiler.stop()
         if self.checkpoint_every is not None:
-            self.save_checkpoint(self.checkpoint_path, self.train_iterations)
+            self.save_checkpoint(self.train_iterations)
         self._manage_augmenters([train_loaders, val_loaders], "end")
         self.logger_interface.end_hook()
 
@@ -303,19 +307,18 @@ class Trainer:
             "lr_scheduler_D",
         ]
 
-    def save_checkpoint(self, ckpt_path: Path, iteration: int):
+    def save_checkpoint(self, iteration: int):
         state = {"iteration": iteration}
         for attr in self.model_torch_attrs:
             el = getattr(self, attr, None)
             state[attr] = el if el is None else el.state_dict()
-        torch.save(state, ckpt_path)
+        torch.save(state, self.checkpoint_dir / f"{iteration}.pt")
         logger.info("Checkpoint iteration %d", iteration)
 
-    def load_checkpoint(self, ckpt_path: Union[Path, str]):
-        ckpt_path = Path(ckpt_path)
-        if ckpt_path.is_file():  # check if checkpoint exists
+    def load_checkpoint(self, ckpt_path: Optional[Path]):
+        if ckpt_path is not None and ckpt_path.is_file():
             logger.info("Resuming run from '%s'", str(ckpt_path))
-            checkpoint = torch.load(ckpt_path, map_location=torch.device("cpu"))
+            checkpoint: dict = torch.load(ckpt_path, map_location=torch.device("cpu"))
             for k, v in checkpoint.items():
                 if k in self.model_torch_attrs:
                     if v is not None:

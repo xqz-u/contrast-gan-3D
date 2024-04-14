@@ -110,7 +110,7 @@ def main(
             # train_bantch_size * 2 == [low batch, high batch]
             HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
             logger_interface,
-            CHECKPOINTS_DIR / f"{run_id}.pt",
+            CHECKPOINTS_DIR / run_id,
             weight_clip=weight_clip,
             generator_lr_scheduler_class=critic_lr_scheduler_class,
             critic_lr_scheduler_class=critic_lr_scheduler_class,

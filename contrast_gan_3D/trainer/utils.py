@@ -23,6 +23,17 @@ from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.utils import object_name
 
 
+def find_latest_checkpoint(ckpt_dir: Union[Path, str]) -> Optional[Path]:
+    ckpt_dir, cont = Path(ckpt_dir), []
+    for file_path in ckpt_dir.glob("*.pt"):
+        try:
+            ckpt_number = int(file_path.stem)  # expects paths 0.pt, 1.pt, ...
+            cont.append(ckpt_number)
+        except ValueError:
+            ...
+    return None if not len(cont) else ckpt_dir / f"{max(cont)}.pt"
+
+
 def cval_paths(
     n_folds: int,
     *dataset_paths: Iterable[Union[Path, str]],
