@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Optional, Union
 
 import h5py
-import numpy as np
 
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import io_utils

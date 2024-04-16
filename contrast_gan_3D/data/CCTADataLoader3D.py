@@ -1,5 +1,4 @@
-from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 import numpy as np
 from batchgenerators.augmentations.crop_and_pad_augmentations import crop
@@ -20,7 +19,7 @@ logger = create_logger(name=__name__)
 class CCTADataLoader3D(DataLoader):
     def __init__(
         self,
-        data: List[Union[str, Path]],
+        data: List[str],
         patch_size: Shape3D,
         batch_size: int,
         scaler: Scaler,

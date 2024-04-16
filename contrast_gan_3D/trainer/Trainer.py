@@ -25,7 +25,8 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO evaluation pipeline
+# TODO ask Roel: upsampling as part of generator or only inference hack?
+# TODO evaluation pipeline + dump path of scans used for train/test in cval
 # TODO reproduce Roel's work so it's comparable in the evaluation
 # TODO try better ResNet blocks + initialize from pretrained
 

@@ -4,6 +4,8 @@ import torch
 from torch import Tensor, nn
 from torch.autograd import grad
 
+from contrast_gan_3D.alias import Shape3D
+
 
 # https://github.com/aladdinpersson/Machine-Learning-Collection/blob/master/ML/Pytorch/GANs/4.%20WGAN-GP/utils.py
 def wgan_gradient_penalty(
@@ -56,8 +58,10 @@ def convolution_output_shape(
     return [c_out] + [f(d) for d in dims[1:]]  # assumes first dim is channels_in
 
 
-def print_convolution_filters_shape(model: nn.Module, input_shape: torch.Tensor):
-    print(f"Input shape: {list(input_shape)}")
+def compute_convolution_filters_shape(
+    model: nn.Module, input_shape: Shape3D, show: bool = True
+) -> List[int]:
+    printables = [f"Input shape: {list(input_shape)}"]
     for n, m in model.named_modules():
         if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
             kwargs = {}
@@ -73,12 +77,16 @@ def print_convolution_filters_shape(model: nn.Module, input_shape: torch.Tensor)
             )
             bias_str = "" if m.bias is None else f" bias: {str(list(m.bias.shape))}"
             params_str = f"# params: {count_parameters(m)}"
-            print(
+            printables.append(
                 f"{n:<40} -> {str(input_shape):<22} {params_str:<20} weight: {str(list(m.weight.shape)):<20}{bias_str}"
             )
+    if show:
+        for p in printables:
+            print(p)
+    return input_shape  # return the final output shape
 
 
-def count_parameters(model: nn.Module, print:bool=False) -> int:
+def count_parameters(model: nn.Module, print: bool = False) -> int:
     tot = 0
     for n, p in model.named_parameters():
         if p.requires_grad:
