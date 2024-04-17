@@ -30,7 +30,7 @@ class WandbLogger:
         default_factory=lambda: {"normalize": True, "value_range": (VMIN, VMAX)}
     )
 
-    def setup_run(self, run: Run):
+    def setup_wandb_run(self, run: Run):
         # https://community.wandb.ai/t/log-stats-with-different-global-steps/4375/3
         run.define_metric("step")
         run.define_metric("*", step_metric="step")

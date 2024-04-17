@@ -59,7 +59,7 @@ class SingleThreadedLogger(LoggerInterface):
 
 @dataclass
 class MultiThreadedLogger(LoggerInterface):
-    started_threads: List[Thread] = field(default_factory=list, init=False)
+    started_threads: List[Thread] = field(default_factory=list, init=False, repr=False)
 
     def __call__(
         self,

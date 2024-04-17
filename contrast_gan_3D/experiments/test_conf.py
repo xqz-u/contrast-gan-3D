@@ -8,7 +8,7 @@ from contrast_gan_3D.experiments.basic_conf import *
 # log_images_every = 3
 
 train_iterations, val_iterations = 61, 3
-validate_every, checkpoint_every = 10, None
+validate_every, checkpoint_every = 10, 20
 log_every, log_images_every = 10, 15
 
 train_batch_size = 3  # 9 tot

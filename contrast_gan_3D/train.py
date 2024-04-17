@@ -1,11 +1,13 @@
 import os
+from dataclasses import dataclass, field
 
 # https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
+import time
 from pathlib import Path
 from pprint import pprint
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import matplotlib
 import numpy as np
@@ -14,6 +16,7 @@ from wandb.sdk.lib.runid import generate_id
 
 import wandb
 from contrast_gan_3D import utils
+from contrast_gan_3D.alias import FoldType
 from contrast_gan_3D.config import CHECKPOINTS_DIR, LOGS_DIR
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.model.loss import HULoss
@@ -24,17 +27,30 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 matplotlib.use("agg")  # avoid MatplotLib warning about figures in threads
 
+make_timestamp = lambda: time.strftime("%m_%d_%Y_%H_%M_%S")
+
 logger = create_logger(name=__name__)
 
 
-def create_profiler(profiler_dir: Path, device: torch.device) -> torch.profiler.profile:
-    # hard-set
+def update_globals(override_module):
+    if override_module is not None:
+        logger.info("Reading overrides from '%s'", str(override_module))
+        override_module = train_utils.global_overrides(override_module)
+        globals().update(vars(override_module))
+
+
+def maybe_create_profiler(
+    profiler_dir: Optional[Path], device: torch.device
+) -> Optional[torch.profiler.profile]:
+    if profiler_dir is None:
+        return
+    # hard-set, global keyword necessary for amending
     global train_iterations, val_iterations, validate_every, checkpoint_every, log_every, log_images_every
     train_iterations, val_iterations = 61, 3
     validate_every, checkpoint_every = 10, None
     log_every, log_images_every = 10, 15
 
-    logger.info("PyTorch profiler with TensorBoard trace in: '%s'", profiler_dir)
+    logger.info("PyTorch profiler with TensorBoard trace in: '%s'", str(profiler_dir))
     activities = [torch.profiler.ProfilerActivity.CPU]
     if "cuda" in device.type:
         activities.append(torch.profiler.ProfilerActivity.CUDA)
@@ -48,98 +64,146 @@ def create_profiler(profiler_dir: Path, device: torch.device) -> torch.profiler.
     )
 
 
-def main(
-    wandb_project: str,
-    wandb_entity: str,
-    device_idx: Optional[int],
-    run_id: Optional[str] = None,
-    profiler_dir: Optional[Path] = None,
-):
-    if seed is not None:
-        logger.info("Using seed %d", seed)
-        utils.seed_everything(seed)
-    else:
-        # NOTE increase speed but halts reproducibility, turn off afterwards
-        logger.info("Set CUDNN in benchmark mode")
-        torch.backends.cudnn.benchmark = True
+@dataclass
+class TrainManager:
+    wandb_project: str
+    wandb_entity: str
+    restart_run_id: Optional[str] = None
+    device_idx: Optional[int] = None
+    profiler_dir: Optional[Path] = None
+    device: torch.device = field(init=False, default=None)
+    profiler: Optional[torch.profiler.profile] = field(init=False, default=None)
+    start_fold: int = field(init=False, default=0)
+    group: str = field(
+        init=False, default_factory=lambda: f"cval_experiment_{make_timestamp()}"
+    )
+    train_val_folds: Tuple[List[FoldType], List[FoldType]] = field(
+        init=False, repr=False, default=()
+    )
+    has_restarted: bool = field(init=False, default=False)
 
-    train_folds, val_folds = train_utils.cval_paths(cval_folds, *dataset_paths)
-
-    for i, (train_fold, val_fold) in enumerate(zip(train_folds, val_folds)):
-        scaled_HU_bounds = scaler(np.array(desired_HU_bounds))
-        logger.info(
-            "Desired HU bounds: %s scaled: %s", desired_HU_bounds, scaled_HU_bounds
-        )
-
-        train_loaders, val_loaders = train_utils.create_dataloaders(
-            train_fold,
-            val_fold,
-            train_patch_size,
-            val_patch_size,
-            train_batch_size,
-            val_batch_size,
-            scaler=scaler,
-            num_workers=num_workers,
-            train_transform=train_transform,
-            seed=seed,
-        )
-
-        if run_id is None:
-            run_id = generate_id()
-            logger.info("NEW run_id: '%s'", run_id)
+    def __post_init__(self):
+        # reproducibility
+        if seed is not None:
+            logger.info("Using seed %d", seed)
+            utils.seed_everything(seed)
         else:
-            logger.info("OLD run_id: '%s'", run_id)
+            # NOTE increase speed but halts reproducibility, turn off afterwards
+            logger.info("Set CUDNN in benchmark mode")
+            torch.backends.cudnn.benchmark = True
+        # restart interrupted experiment
+        if self.restart_run_id is not None:
+            assert (
+                self.wandb_entity is not None
+            ), "Give the wandb entity of the restarted run."
+            run = wandb.Api().run(
+                "/".join([self.wandb_entity, self.wandb_project, self.restart_run_id])
+            )
+            self.group = run.group
+            self.start_fold = run.config["fold"]
+            train_folds = run.config["train_folds"]
+            val_folds = run.config["val_folds"]
+            logger.info(
+                "RESUME run '%s' experiment '%s' fold %d",
+                self.restart_run_id,
+                self.group,
+                self.start_fold,
+            )
+        else:
+            train_folds, val_folds = train_utils.cval_paths(
+                n_cval_folds, *dataset_paths
+            )
+        # other setup attributes
+        self.train_val_folds = (train_folds, val_folds)
+        self.device = utils.set_GPU(self.device_idx)
+        self.profiler = maybe_create_profiler(self.profiler_dir, self.device)
 
-        device = utils.set_GPU(device_idx)
+    def generate_run_id(self) -> str:
+        if self.restart_run_id is not None and not self.has_restarted:
+            self.has_restarted = True
+            return self.restart_run_id
+        return generate_id()
 
-        profiler = None
-        if profiler_dir is not None:
-            profiler = create_profiler(Path(f"{str(profiler_dir)}_{i}"), device)
+    def __call__(self):
+        train_folds, val_folds = self.train_val_folds
 
-        trainer = Trainer(
-            train_iterations,
-            val_iterations,
-            validate_every,
-            train_generator_every,
-            log_every,
-            log_images_every,
-            generator_class,
-            critic_class,
-            generator_optim_class,
-            critic_optim_class,
-            # train_bantch_size * 2 == [low batch, high batch]
-            HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
-            logger_interface,
-            CHECKPOINTS_DIR / run_id,
-            weight_clip=weight_clip,
-            generator_lr_scheduler_class=critic_lr_scheduler_class,
-            critic_lr_scheduler_class=critic_lr_scheduler_class,
-            device=device,
-            checkpoint_every=checkpoint_every,
-        )
+        for fold, (train_fold, val_fold) in enumerate(
+            zip(train_folds[self.start_fold :], val_folds[self.start_fold :]),
+            start=self.start_fold,
+        ):
+            run_id = self.generate_run_id()
 
-        critic_size = count_parameters(trainer.critic)
-        generator_size = count_parameters(trainer.generator)
-        experiment_config = train_utils.update_experiment_config(globals()) | {
-            "generator": trainer.generator,
-            "critic": trainer.critic,
-            "generator_size": generator_size,
-            "critic_size": critic_size,
-        }
-        pprint(experiment_config)
-        logger.info("Critic size: %d Generator size: %d", critic_size, generator_size)
+            train_loaders, val_loaders = train_utils.create_dataloaders(
+                train_fold,
+                val_fold,
+                train_patch_size,
+                val_patch_size,
+                train_batch_size,
+                val_batch_size,
+                scaler=scaler,
+                num_workers=num_workers,
+                train_transform=train_transform,
+                seed=seed,
+            )
 
-        with wandb.init(
-            id=run_id,
-            resume="allow",
-            project=wandb_project,
-            entity=wandb_entity,
-            dir=LOGS_DIR,
-            config=experiment_config,
-        ) as run:
-            logger_interface.logger.setup_run(run)
-            trainer.fit(train_loaders, val_loaders, profiler=profiler)
-        break
+            scaled_HU_bounds = scaler(np.array(desired_HU_bounds))
+            logger.info(
+                "Desired HU bounds: %s scaled: %s", desired_HU_bounds, scaled_HU_bounds
+            )
+            trainer = Trainer(
+                train_iterations,
+                val_iterations,
+                validate_every,
+                train_generator_every,
+                log_every,
+                log_images_every,
+                generator_class,
+                critic_class,
+                generator_optim_class,
+                critic_optim_class,
+                # train_bantch_size * 2 == [low batch, high batch]
+                HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
+                logger_interface,
+                CHECKPOINTS_DIR / run_id,
+                weight_clip=weight_clip,
+                generator_lr_scheduler_class=critic_lr_scheduler_class,
+                critic_lr_scheduler_class=critic_lr_scheduler_class,
+                device=self.device,
+                checkpoint_every=checkpoint_every,
+            )
+
+            critic_size = count_parameters(trainer.critic)
+            generator_size = count_parameters(trainer.generator)
+            logger.info(
+                "Critic size: %d Generator size: %d", critic_size, generator_size
+            )
+
+            local_conf = {
+                "generator": trainer.generator,
+                "critic": trainer.critic,
+                "fold": fold,
+                "train_folds": train_folds,
+                "val_folds": val_folds,
+                "generator_size": generator_size,
+                "critic_size": critic_size,
+            }
+            experiment_config = local_conf | train_utils.config_from_globals(globals())
+            pprint(experiment_config)
+
+            logger.info("FOLD %d", fold)
+            with wandb.init(
+                id=run_id,
+                resume="allow",
+                project=self.wandb_project,
+                entity=self.wandb_entity,
+                dir=LOGS_DIR,
+                config=experiment_config,
+                group=self.group,
+            ) as run:
+                logger_interface.logger.setup_wandb_run(run)
+                trainer.fit(train_loaders, val_loaders, profiler=self.profiler)
+                if self.profiler is not None:  # profile only one run
+                    break
 
 
 if __name__ == "__main__":
@@ -160,7 +224,7 @@ if __name__ == "__main__":
         "--wandb-run-id",
         type=str,
         default=None,
-        help="wandb run id used to resume logging a run.",
+        help="wandb run id used to resume training runs.",
     )
     parser.add_argument(
         "--profiler-dir", type=Path, default=None, help="torch-tb-profiler logs dir."
@@ -168,16 +232,11 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=int, default=None, help="CUDA device index")
     args = parser.parse_args()
 
-    override_module = args.conf_overrides
-    if override_module is not None:
-        logger.info("Reading overrides from '%s'", str(override_module))
-        override_module = train_utils.global_overrides(override_module)
-        globals().update(vars(override_module))
-
-    main(
+    update_globals(args.conf_overrides)
+    TrainManager(
         args.wandb_project,
         args.wandb_entity,
+        args.wandb_run_id,
         args.device,
-        run_id=args.wandb_run_id,
-        profiler_dir=args.profiler_dir,
-    )
+        args.profiler_dir,
+    )()

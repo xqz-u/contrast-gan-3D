@@ -1,5 +1,6 @@
 from enum import Enum
-from typing import Tuple, Union
+from pathlib import Path
+from typing import List, Tuple, Union
 
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ from batchgenerators.dataloading.single_threaded_augmenter import (
 
 Shape3D = Tuple[int, int, int]
 Array = Union[np.ndarray, torch.Tensor]
+FoldType = List[Tuple[Union[str, Path], int]]
 BGenAugmenter = Union[
     NonDetMultiThreadedAugmenter, MultiThreadedAugmenter, SingleThreadedAugmenter
 ]

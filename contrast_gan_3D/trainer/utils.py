@@ -4,7 +4,7 @@ import sys
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type, Union
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
 from sklearn.model_selection import StratifiedKFold
 
-from contrast_gan_3D.alias import BGenAugmenter, Shape3D
+from contrast_gan_3D.alias import BGenAugmenter, FoldType, Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
 from contrast_gan_3D.data.CCTADataLoader3D import CCTADataLoader3D
 from contrast_gan_3D.data.Scaler import Scaler
@@ -38,7 +38,7 @@ def cval_paths(
     n_folds: int,
     *dataset_paths: Iterable[Union[Path, str]],
     seed: Optional[int] = None,
-) -> Tuple[List[List[Tuple[Union[str, Path], int]]], ...]:
+) -> Tuple[List[FoldType], List[FoldType]]:
     X, Y, train, val = [], [], [], []
 
     for df_path in dataset_paths:
@@ -55,9 +55,7 @@ def cval_paths(
     return train, val
 
 
-def divide_scans_in_fold(
-    fold: List[Tuple[Union[str, Path], int]]
-) -> Dict[Any, List[Union[str, Path]]]:
+def divide_scans_in_fold(fold: FoldType) -> Dict[int, List[Union[str, Path]]]:
     ret = defaultdict(list)
     for path, label in fold:
         ret[label].append(path)
@@ -65,8 +63,8 @@ def divide_scans_in_fold(
 
 
 def create_dataloaders(
-    train_fold: List[Tuple[str, int]],
-    val_fold: List[Tuple[str, int]],
+    train_fold: FoldType,
+    val_fold: FoldType,
     train_patch_size: Shape3D,
     val_patch_size: Union[Shape3D, int],
     train_batch_size: int,
@@ -142,7 +140,7 @@ def global_overrides(config_path: Path):
     return importlib.import_module(config_name)
 
 
-def update_experiment_config(vars: dict) -> dict:
+def config_from_globals(vars: dict) -> dict:
     return (
         {
             k: vars[k]
@@ -167,7 +165,7 @@ def update_experiment_config(vars: dict) -> dict:
                 "val_iterations",
                 "train_generator_every",
                 "seed",
-                "cval_folds",
+                "n_cval_folds",
                 "checkpoint_every",
                 "validate_every",
                 "log_every",

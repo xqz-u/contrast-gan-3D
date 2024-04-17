@@ -25,16 +25,15 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO ask Roel: upsampling as part of generator or only inference hack?
-# TODO evaluation pipeline + dump path of scans used for train/test in cval
+# TODO evaluation metrics
+# TODO train with better ResNet blocks + initialize from pretrained
 # TODO reproduce Roel's work so it's comparable in the evaluation
-# TODO try better ResNet blocks + initialize from pretrained
 
+# TODO ask Roel: upsampling as part of generator or only inference hack?
+
+# TODO remove globals from TrainManager
 # TODO exception handling LoggerInterface
-
-# TODO use fold index to group cval runs belonging to same experiment together
-# TODO save folds configuration so that restarting a wandb.run is guaranteed to
-#      use the same train data as before it was stopped / save it into wandb itself!
+# TODO parallelize cval runs: multiple processes & multiple GPUs
 
 # TODO wrong validation metrics ?
 # TODO AMP, DDP ?
