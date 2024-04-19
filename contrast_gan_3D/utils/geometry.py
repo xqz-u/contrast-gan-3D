@@ -5,9 +5,10 @@ import numpy as np
 import pandas as pd
 import torch
 
-from contrast_gan_3D import constants
-from contrast_gan_3D.alias import Array, Shape3D
-from contrast_gan_3D.utils import array, io_utils, logging_utils
+from contrast_gan_3D import utils
+from contrast_gan_3D.alias import Array, ArrayShape, Shape3D
+from contrast_gan_3D.constants import AORTIC_ROOT_PATCH_SIZE, AORTIC_ROOT_PATCH_SPACING
+from contrast_gan_3D.utils import logging_utils
 
 logger = logging_utils.create_logger(name=__name__)
 
@@ -104,8 +105,8 @@ def extract_ostia_patch_3D(
     meta: dict,
     image_id: str,
     ostia_df: pd.DataFrame,
-    patch_size: np.ndarray = constants.AORTIC_ROOT_PATCH_SIZE,
-    patch_spacing: np.ndarray = constants.AORTIC_ROOT_PATCH_SPACING,
+    patch_size: np.ndarray = AORTIC_ROOT_PATCH_SIZE,
+    patch_spacing: np.ndarray = AORTIC_ROOT_PATCH_SPACING,
     coords_prefix: str = "",
 ) -> Tuple[np.ndarray, np.ndarray]:
     assert not isinstance(
@@ -131,39 +132,58 @@ def extract_ostia_patch_3D(
     return np.stack(ostia_patch_samples), ostia_world_coords
 
 
-def centered_3D_patch_indexer(
-    target_shape: Shape3D, source_shape: Shape3D, xyz: np.ndarray
-) -> List[slice]:
-    half = array.parse_patch_size(target_shape, source_shape) // 2
+def ensure_valid_bounds(s: int, e: int, target_size: int, size: int) -> Tuple[int, int]:
+    assert not (s < 0 and e > size), f"{target_size} < {size}"
+    if s < 0:
+        s, e = 0, target_size
+    if e > size:
+        s, e = size - target_size, size
+    return s, e
+
+
+# NOTE vectorized version missing :/
+def ensure_valid_bounds_arr(
+    bounds: np.ndarray, target_shape: ArrayShape, shape: ArrayShape
+):
+    for (i, (s, e)), target_size, size in zip(enumerate(bounds), target_shape, shape):
+        bounds[i] = ensure_valid_bounds(s, e, target_size, size)
+
+
+def get_patch_bounds(
+    target_shape: ArrayShape, source_shape: ArrayShape, coords: np.ndarray
+) -> np.ndarray:
+    half = utils.parse_patch_size(target_shape, source_shape) // 2
     target_shape = np.array(target_shape)
-    bbox = np.dstack([xyz - half, xyz + half + target_shape % 2]).squeeze()
-    return [slice(*box) for box in bbox]
+    bbox = np.dstack([coords - half, coords + half + target_shape % 2]).squeeze()
+    ensure_valid_bounds_arr(bbox, target_shape, source_shape)
+    return bbox
 
 
-# NOTE xyz is the center of the patch
-def extract_3D_patch(
-    img: Union[Array, h5py.Dataset], size: Shape3D, xyz: np.ndarray
-) -> Array:
-    # shape: `size`, possibly < `img.shape`
-    return img[*centered_3D_patch_indexer(size, img.shape, xyz)]
-
-
-def extract_random_3D_patch(
-    img: Union[Array, h5py.Dataset],
-    size: Shape3D,
-    rng: Optional[Union[np.random.Generator, np.random.RandomState]] = None,
+# NOTE coords is the center of the patch
+def extract_patch(
+    img: Union[Array, h5py.Dataset], size: ArrayShape, coords: np.ndarray
 ) -> Tuple[Array, np.ndarray]:
+    # shape: `size`, possibly < `img.shape`
+    bbox = get_patch_bounds(size, img.shape, coords)
+    return img[*[slice(*b) for b in bbox]], bbox
+
+
+def extract_random_patch(
+    img: Union[Array, h5py.Dataset],
+    size: ArrayShape,
+    rng: Optional[Union[np.random.Generator, np.random.RandomState]] = None,
+) -> Tuple[Array, np.ndarray, np.ndarray]:
     if rng is None:
         rng = np.random.default_rng()
-    size = array.parse_patch_size(size, img.shape)
-    # xyz is the *center* of the extracted cube
+    size = utils.parse_patch_size(size, img.shape)
+    # coords is the *center* of the extracted cube
     sampler = rng.integers if isinstance(rng, np.random.Generator) else rng.randint
-    xyz = [
+    coords = [
         sampler(extent, dim_high - extent - mod + 1)
         for dim_high, extent, mod in zip(img.shape, size // 2, size % 2)
     ]
-    xyz = np.array(xyz)
-    return extract_3D_patch(img, size, xyz), xyz
+    coords = np.array(coords)
+    return extract_patch(img, size, coords), coords
 
 
 # NOTE used for plotting
@@ -172,7 +192,7 @@ def expand_3D_patch_whole_image(
 ) -> Array:
     # shape: `img.shape` - mask of extracted coordinates in original array
     patch_mask = (np if isinstance(patch, np.ndarray) else torch).zeros(img_shape)
-    patch_mask[*centered_3D_patch_indexer(size, img_shape, xyz)] = patch
+    patch_mask[*get_patch_bounds(size, img_shape, xyz)] = patch
     return patch_mask
 
 
@@ -182,9 +202,7 @@ def world_to_grid_coords(
     spacing: np.ndarray,
     grid_shape: Shape3D,
 ) -> np.ndarray:
-    centerlines_img_coords = world_to_image_coords(
-        centerlines[..., :3], offset, spacing
-    )
+    centerlines_img_coords = world_to_image_coords(centerlines, offset, spacing)
     # NOTE many centerlines overlap once mapped to image coordinates
     centerlines_img_coords = np.unique(centerlines_img_coords, axis=0)
     centerlines_grid = np.zeros(grid_shape, dtype=np.uint8)

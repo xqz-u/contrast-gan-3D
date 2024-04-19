@@ -25,9 +25,9 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
+# TODO reproduce Roel's work: 2D image logger, 2D gen & discriminator
 # TODO evaluation metrics
 # TODO train with better ResNet blocks + initialize from pretrained
-# TODO reproduce Roel's work so it's comparable in the evaluation
 
 # TODO ask Roel: upsampling as part of generator or only inference hack?
 

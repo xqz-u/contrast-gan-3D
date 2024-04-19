@@ -18,7 +18,7 @@ from sklearn.model_selection import StratifiedKFold
 
 from contrast_gan_3D.alias import BGenAugmenter, FoldType, Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
-from contrast_gan_3D.data.CCTADataLoader3D import CCTADataLoader3D
+from contrast_gan_3D.data.CCTADataLoader import CCTADataLoader
 from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.utils import object_name
 
@@ -69,6 +69,7 @@ def create_dataloaders(
     val_patch_size: Union[Shape3D, int],
     train_batch_size: int,
     val_batch_size: int,
+    rng: np.random.Generator,
     scaler: Type[Scaler] = lambda x: x,
     num_workers: Tuple[int, int] = (1, 1),
     train_transform: Optional[Callable[[dict], dict]] = None,
@@ -79,10 +80,11 @@ def create_dataloaders(
     train_by_lab = divide_scans_in_fold(train_fold)
     train_loaders = {
         label: NonDetMultiThreadedAugmenter(
-            CCTADataLoader3D(
+            CCTADataLoader(
                 paths,
                 train_patch_size,
                 train_batch_size,
+                rng,
                 scaler=scaler,
                 shuffle=True,
                 num_threads_in_multithreaded=num_workers[0],
@@ -98,10 +100,11 @@ def create_dataloaders(
 
     val_loaders = {
         label: NonDetMultiThreadedAugmenter(
-            CCTADataLoader3D(
+            CCTADataLoader(
                 paths,
                 val_patch_size,
                 val_batch_size,
+                rng,
                 scaler=scaler,
                 shuffle=True,
                 num_threads_in_multithreaded=num_workers[1],

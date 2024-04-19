@@ -37,8 +37,9 @@ max_HU_delta = 600
 desired_HU_bounds = (350, 450)
 HU_norm_range = (MIN_HU, MAX_HU)
 scaler = FactorZeroCenterScaler(*HU_norm_range, max_HU_delta)
+rng = np.random.default_rng(seed=seed)
 
-logger_interface = WandbLogger(scaler, rng=np.random.default_rng(seed=seed))
+logger_interface = WandbLogger(scaler, rng=rng)
 logger_interface = MultiThreadedLogger(logger_interface)
 
 generator_args = {

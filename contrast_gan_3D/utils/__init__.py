@@ -6,6 +6,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from contrast_gan_3D.alias import Shape3D
+
 
 def object_name(el: object) -> str:
     return el.__class__.__name__
@@ -36,3 +38,11 @@ def to_CPU(t) -> Any:
     if hasattr(t, "is_cuda") and t.is_cuda:
         t = t.detach().cpu()
     return t
+
+
+def parse_patch_size(target_shape: Shape3D, input_shape: Shape3D) -> np.ndarray:
+    target_shape = np.array(target_shape)
+    for i, dim in enumerate(target_shape):
+        if dim == -1:
+            target_shape[i] = input_shape[i]
+    return target_shape

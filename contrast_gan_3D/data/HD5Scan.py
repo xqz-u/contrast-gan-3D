@@ -8,16 +8,13 @@ from contrast_gan_3D.utils import io_utils
 
 
 class HD5Scan:
-    def __init__(
-        self,
-        h5_path: Union[str, Path],
-    ):
+    def __init__(self, h5_path: Union[str, Path]):
         self.path = h5_path
         self.name = io_utils.stem(self.path)
         # attributes set within __enter__
         self.hd5_file = None
         self.meta = {}
-        self.labelmap = None
+        self.labelmap: Optional[h5py.Dataset] = None
         self.centerlines_img_coords = None
 
     def __enter__(self) -> "HD5Scan":
@@ -58,7 +55,7 @@ class HD5Scan:
         # safety net, but segmentations should generally be in the .h5 files
         if self.labelmap is None:
             self.labelmap = geom.world_to_grid_coords(
-                self.centerlines,
+                self.centerlines[..., 3],
                 self.meta["offset"],
                 self.meta["spacing"],
                 self.ccta.shape,

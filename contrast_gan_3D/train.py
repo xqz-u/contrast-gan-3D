@@ -140,6 +140,7 @@ class TrainManager:
                 val_patch_size,
                 train_batch_size,
                 val_batch_size,
+                rng,
                 scaler=scaler,
                 num_workers=num_workers,
                 train_transform=train_transform,

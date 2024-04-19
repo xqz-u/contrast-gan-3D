@@ -129,7 +129,7 @@ def sitk_to_h5(
         ostia = load_mevis_coords(ostia)[0]
 
     centerlines_seg = geom.world_to_grid_coords(
-        centerlines, meta["offset"], meta["spacing"], image.shape
+        centerlines[..., 3], meta["offset"], meta["spacing"], image.shape
     )
     # centerline extractor works with WHD oriented images, our convention is HWD
     centerlines_seg = centerlines_seg.transpose(1, 0, 2)  # WHD -> HWD

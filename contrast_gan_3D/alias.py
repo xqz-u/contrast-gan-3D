@@ -13,6 +13,7 @@ from batchgenerators.dataloading.single_threaded_augmenter import (
 )
 
 Shape3D = Tuple[int, int, int]
+ArrayShape = Tuple[int, ...]
 Array = Union[np.ndarray, torch.Tensor]
 FoldType = List[Tuple[Union[str, Path], int]]
 BGenAugmenter = Union[
