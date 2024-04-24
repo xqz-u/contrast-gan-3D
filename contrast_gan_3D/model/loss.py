@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 
-from contrast_gan_3D.alias import Shape3D
+from contrast_gan_3D.alias import ArrayShape
 
 
 class StableStd(torch.autograd.Function):
@@ -47,7 +47,7 @@ class HULoss(nn.Module):
         self: int,
         min_HU_contstraint: float,
         max_HU_constraint: float,
-        patch_size: Shape3D,
+        patch_size: ArrayShape,
     ):
         super().__init__()
         device = "cpu"
@@ -63,9 +63,9 @@ class HULoss(nn.Module):
 
     def forward(self, batch: Tensor, mask: torch.BoolTensor) -> Tensor:
         lb, ub = torch.minimum(batch, self.min_HU), torch.maximum(batch, self.max_HU)
-        loss_low = F.mse_loss(lb, self.min_HU, reduction="none")
-        loss_high = F.mse_loss(ub, self.max_HU, reduction="none")
-        loss = (loss_low + loss_high) * mask
+        loss_below = F.mse_loss(lb, self.min_HU, reduction="none")
+        loss_above = F.mse_loss(ub, self.max_HU, reduction="none")
+        loss = (loss_below + loss_above) * mask
         return loss.sum() / mask.sum()  # MSE over unmasked voxels
 
 

@@ -3,7 +3,7 @@ from typing import OrderedDict
 import torch
 import torch.nn as nn
 
-from contrast_gan_3D.model.blocks import ConvBlock3D, ResNetBlock3D
+from contrast_gan_3D.model.blocks import ConvBlock, ResNetBlock
 
 
 class ResnetGenerator(nn.Module):
@@ -20,6 +20,7 @@ class ResnetGenerator(nn.Module):
         n_resnet_blocks: int,
         n_updownsample_blocks: int,
         init_channels_out: int,
+        is_2D: bool = False,
         resnet_dropout_prob: float = 0.0,
         resnet_padding_mode: str = "zeros",
     ):
@@ -32,19 +33,22 @@ class ResnetGenerator(nn.Module):
             "padding_mode": "reflect",
             "padding": 3,
         }
-        model = [("first", ConvBlock3D(1, init_channels_out, **first_and_last_common))]
+        model = [
+            ("first", ConvBlock(is_2D, 1, init_channels_out, **first_and_last_common))
+        ]
 
         downsampling = []
         for i in range(n_updownsample_blocks):
             dim_in = init_channels_out * 2**i
             dim_out = dim_in * 2
             downsampling.append(
-                ConvBlock3D(dim_in, dim_out, kernel_size=3, stride=2, padding=1)
+                ConvBlock(is_2D, dim_in, dim_out, kernel_size=3, stride=2, padding=1)
             )
         model.append(("downsampling", nn.Sequential(*downsampling)))
 
         resnet_blocks = [
-            ResNetBlock3D(
+            ResNetBlock(
+                is_2D,
                 dim_out,
                 dim_out,
                 dropout_prob=resnet_dropout_prob,
@@ -59,7 +63,8 @@ class ResnetGenerator(nn.Module):
             dim_in = init_channels_out * 2**i
             dim_out = int(dim_in / 2)
             upsampling.append(
-                ConvBlock3D(
+                ConvBlock(
+                    is_2D,
                     dim_in,
                     dim_out,
                     kernel_size=3,
@@ -70,10 +75,11 @@ class ResnetGenerator(nn.Module):
                 )
             )
         model.append(("upsampling", nn.Sequential(*upsampling)))
+        last_conv = nn.Conv2d if is_2D else nn.Conv3d
         model.append(
             (
                 "last_conv",
-                nn.Conv3d(init_channels_out, 1, **first_and_last_common, bias=True),
+                last_conv(init_channels_out, 1, **first_and_last_common, bias=True),
             )
         )
         model.append(("tanh", nn.Tanh()))

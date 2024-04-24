@@ -1,10 +1,11 @@
 from typing import List, Optional, Union
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 from torch.autograd import grad
 
-from contrast_gan_3D.alias import Shape3D
+from contrast_gan_3D.alias import ArrayShape
 
 
 # https://github.com/aladdinpersson/Machine-Learning-Collection/blob/master/ML/Pytorch/GANs/4.%20WGAN-GP/utils.py
@@ -14,9 +15,16 @@ def wgan_gradient_penalty(
     critic: nn.Module,
     device: Union[torch.device, str] = "cpu",
     lambda_: float = 10,
+    rng: Optional[np.random.Generator] = None,
 ) -> Tensor:
-    bs, *rest = real_batch.shape
-    eps = torch.rand((bs,) + (1,) * len(rest), device=device).expand_as(real_batch)
+    interp_sample_size, *t_shape = real_batch.shape
+    if len(real_batch) != len(fake_batch):
+        interp_sample_size = min(len(real_batch), len(fake_batch))
+        rng = rng or np.random.default_rng()
+        real_batch = real_batch[rng.integers(len(real_batch), size=interp_sample_size)]
+        fake_batch = fake_batch[rng.integers(len(fake_batch), size=interp_sample_size)]
+    eps = torch.rand((interp_sample_size,) + (1,) * len(t_shape), device=device)
+    eps = eps.expand_as(real_batch)
     interpolation = eps * real_batch + (1 - eps) * fake_batch
     critic_logits = critic(interpolation)
     # https://discuss.pytorch.org/t/when-do-i-use-create-graph-in-autograd-grad/32853
@@ -59,13 +67,13 @@ def convolution_output_shape(
 
 
 def compute_convolution_filters_shape(
-    model: nn.Module, input_shape: Shape3D, show: bool = True
+    model: nn.Module, input_shape: ArrayShape, show: bool = True
 ) -> List[int]:
     printables = [f"Input shape: {list(input_shape)}"]
     for n, m in model.named_modules():
-        if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
+        if isinstance(m, (nn.Conv3d, nn.Conv2d)):
             kwargs = {}
-            if isinstance(m, nn.ConvTranspose3d):
+            if isinstance(m, (nn.ConvTranspose3d, nn.ConvTranspose2d)):
                 kwargs = {"transpose_output_padding": m.output_padding[0]}
             input_shape = convolution_output_shape(
                 input_shape,

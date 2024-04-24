@@ -1,9 +1,8 @@
 from collections import OrderedDict
 
-import torch
-import torch.nn as nn
+from torch import Tensor, nn
 
-from contrast_gan_3D.model.blocks import ConvBlock3D
+from contrast_gan_3D.model.blocks import ConvBlock
 
 
 class PatchGANDiscriminator(nn.Module):
@@ -12,9 +11,10 @@ class PatchGANDiscriminator(nn.Module):
         channels_in: int,
         init_channels_out: int,
         discriminator_depth: int,
+        is_2D: bool = False,
         kernel_size: int = 4,
         padding: int = 1,
-        norm_layer: nn.Module = nn.BatchNorm3d,
+        norm_layer: nn.Module | None = None,
     ):
         super().__init__()
 
@@ -22,7 +22,8 @@ class PatchGANDiscriminator(nn.Module):
         model = [
             (
                 "first",
-                ConvBlock3D(
+                ConvBlock(
+                    is_2D,
                     channels_in,
                     init_channels_out,
                     kernel_size,
@@ -41,7 +42,8 @@ class PatchGANDiscriminator(nn.Module):
             in_ = min(2**n, 8) * init_channels_out
             out_ = min(2 ** (n + 1), 8) * init_channels_out
             middle.append(
-                ConvBlock3D(
+                ConvBlock(
+                    is_2D,
                     in_,
                     out_,
                     kernel_size,
@@ -56,7 +58,7 @@ class PatchGANDiscriminator(nn.Module):
         model.append(
             (
                 "last",
-                nn.Conv3d(
+                (nn.Conv2d if is_2D else nn.Conv3d)(
                     out_,
                     1,
                     kernel_size=kernel_size,
@@ -67,5 +69,5 @@ class PatchGANDiscriminator(nn.Module):
         )
         self.model = nn.Sequential(OrderedDict(model))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         return self.model(x)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pprint import pprint
 from typing import Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
@@ -11,7 +12,7 @@ from torchvision.utils import make_grid
 from wandb.sdk.wandb_run import Run
 
 import wandb
-from contrast_gan_3D.alias import Array
+from contrast_gan_3D.alias import ArrayShape
 from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.data.utils import minmax_norm
@@ -21,14 +22,18 @@ from contrast_gan_3D.utils import geometry as geom
 @dataclass
 class WandbLogger:
     scaler: Type[Scaler]
-    sample_size: int = 64
-    run: Run = None
+    run: Optional[Run] = None
     rng: np.random.Generator = field(default_factory=np.random.default_rng)
     cmap: colors.Colormap = field(default_factory=lambda: cm.RdBu)
     figsize: Tuple[int, int] = (10, 10)
+    use_caption: bool = field(init=False, default=True)
     grid_args: dict = field(
         default_factory=lambda: {"normalize": True, "value_range": (VMIN, VMAX)}
     )
+
+    def __post_init__(self):
+        if self.run is not None:
+            self.setup_wandb_run(self.run)
 
     def setup_wandb_run(self, run: Run):
         # https://community.wandb.ai/t/log-stats-with-different-global-steps/4375/3
@@ -37,22 +42,22 @@ class WandbLogger:
         self.run = run
 
     def log_loss(self, loss_dict: Dict[str, Tensor], iteration: int, stage: str):
-        self.run.log(
-            {f"{stage}/{k}": v for k, v in loss_dict.items()} | {"step": iteration}
-        )
+        log_dict = {f"{stage}/{k}": v for k, v in loss_dict.items()}
+        log_dict |= {"step": iteration}
+        if self.run is not None:
+            self.run.log(log_dict)
+        else:
+            pprint(log_dict)
 
-    def reconstruct_sample(self, slices: Array) -> Array:
-        return self.scaler.unscale(slices)
-
-    def reconstruct_optimized_sample(self, slices: Array) -> Array:
-        return self.scaler.unscale(slices)
-
-    def create_indexer(self, batch_shape: Tuple[int, ...]) -> list:
+    def create_indexer(self, batch_shape: ArrayShape, sample_size: int) -> list:
         sample_idx = self.rng.integers(batch_shape[0])
         slice_idxs = sorted(
-            self.rng.choice(batch_shape[-1], size=self.sample_size, replace=False)
+            self.rng.choice(batch_shape[-1], size=sample_size, replace=False)
         )
         return [sample_idx, ..., slice_idxs]
+
+    def pre_call_hook(self, *tensors: List[Optional[Tensor]]) -> List[Optional[Tensor]]:
+        return tensors
 
     def __call__(
         self,
@@ -60,12 +65,17 @@ class WandbLogger:
         it: int,
         stage: str,
         scan_type: str,
+        sample_size: int,
         names: List[str],
         masks: Optional[Tensor] = None,
         reconstructions: Optional[Tensor] = None,
         attenuations: Optional[Tensor] = None,
     ) -> list:
-        indexer = self.create_indexer(scans.shape)
+        scans, masks, reconstructions, attenuations = self.pre_call_hook(
+            scans, masks, reconstructions, attenuations
+        )
+
+        indexer = self.create_indexer(scans.shape, sample_size)
         sample_idx = indexer[0]
         fig, caption = None, names[sample_idx]
         workspace, caption_cp = f"{stage}/images/{scan_type}", caption
@@ -86,13 +96,17 @@ class WandbLogger:
             )
             caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
 
-        slices = self.reconstruct_sample(scans[indexer])
-        fig = WandbLogger.create_grid_figure(slices, fig, **self.grid_args)
+        slices = self.scaler.unscale(scans[indexer])
+        fig = WandbLogger.create_grid_figure(
+            slices, fig, figsize=self.figsize, **self.grid_args
+        )
         buffer.append(((f"{workspace}/sample", it, fig), {"caption": caption_cp}))
 
         if reconstructions is not None:
-            recon = self.reconstruct_optimized_sample(reconstructions[indexer])
-            fig = WandbLogger.create_grid_figure(recon, **self.grid_args)
+            recon = self.scaler.unscale(reconstructions[indexer])
+            fig = WandbLogger.create_grid_figure(
+                recon, figsize=self.figsize, **self.grid_args
+            )
             buffer.append(
                 ((f"{workspace}/reconstruction", it, fig), {"caption": caption})
             )
@@ -115,13 +129,14 @@ class WandbLogger:
         mappable = cm.ScalarMappable(norm=norm, cmap=self.cmap)
         cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
         cbar.set_ticks(np.linspace(low, high, 5))
-        return WandbLogger.create_grid_figure(attn, fig, tight=False)
+        return WandbLogger.create_grid_figure(attn, fig)
 
     @staticmethod
     def create_grid_figure(
         slices: Union[Tensor, np.ndarray],
         fig: Optional[Figure] = None,
         tight: bool = True,
+        figsize: Tuple[int, int] = (10, 10),
         **grid_args,
     ) -> Figure:
         if isinstance(slices, np.ndarray):
@@ -129,7 +144,7 @@ class WandbLogger:
         # CHWD -> DCHW -> C,HxD,WxD
         grid = make_grid(slices.permute(3, 0, 1, 2), **grid_args)
         if fig is None:
-            fig, ax = plt.subplots(figsize=(10, 10))
+            fig, ax = plt.subplots(figsize=figsize)
         else:
             ax, *_ = fig.get_axes()
         ax.imshow(grid.permute(1, 2, 0))
@@ -139,17 +154,24 @@ class WandbLogger:
         return fig
 
     def log_wandb_image(
-        self,
-        tag: str,
-        it: int,
-        fig: Figure,
-        caption: Optional[str] = None,
+        self, tag: str, it: int, fig: Figure, caption: Optional[str] = None
     ):
-        image = wandb.Image(fig, caption=caption)
-        # image.image.show()
-        self.run.log({tag: image, "step": it})
+        image = wandb.Image(fig, caption=caption if self.use_caption else None)
+        if self.run is not None:
+            self.run.log({tag: image, "step": it})
+        else:
+            image.image.show()
         plt.close(fig)
 
     def log_images(self, buffer: List[tuple]):
         for args, kwargs in buffer:
             self.log_wandb_image(*args, **kwargs)
+
+
+@dataclass
+class WandbLogger2D(WandbLogger):
+    figsize: Tuple[int, int] = (12, 3)
+    use_caption: bool = field(init=False, default=False)
+
+    def pre_call_hook(self, *tensors: List[Optional[Tensor]]) -> List[Optional[Tensor]]:
+        return [t if t is None else t.permute((1, 2, 3, 0))[None] for t in tensors]

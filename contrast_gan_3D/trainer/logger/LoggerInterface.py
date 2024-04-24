@@ -23,6 +23,7 @@ class LoggerInterface:
         scan_types: List[ScanType],
         iteration: int,
         stage: str,
+        sample_size: int,
     ):
         ...
 
@@ -40,6 +41,7 @@ class SingleThreadedLogger(LoggerInterface):
         scan_types: List[ScanType],
         iteration: int,
         stage: str,
+        sample_size: int,
     ):
         for batch, scan_type, recon, attn_map in zip(
             batches, scan_types, reconstructions, attenuations
@@ -49,6 +51,7 @@ class SingleThreadedLogger(LoggerInterface):
                 iteration,
                 stage,
                 scan_type.name,
+                sample_size,
                 batch["name"],
                 masks=batch["seg"],
                 reconstructions=to_CPU(recon),
@@ -69,8 +72,9 @@ class MultiThreadedLogger(LoggerInterface):
         scan_types: List[ScanType],
         iteration: int,
         stage: str,
+        sample_size: int,
     ):
-        # detach from GPU to avoid threads holding references
+        # detach from GPU to avoid threads holding references - bottleneck :/
         for cont in [reconstructions, attenuations]:
             for i in range(len(cont)):
                 cont[i] = to_CPU(cont[i])
@@ -85,6 +89,7 @@ class MultiThreadedLogger(LoggerInterface):
                 scan_types,
                 iteration,
                 stage,
+                sample_size,
             ),
             name=f"logger-{stage}-{iteration}",
         )

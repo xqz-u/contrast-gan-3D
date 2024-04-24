@@ -151,6 +151,10 @@ class TrainManager:
             logger.info(
                 "Desired HU bounds: %s scaled: %s", desired_HU_bounds, scaled_HU_bounds
             )
+            train_subopt_bs = (
+                train_batch_size[ScanType.LOW.value]
+                + train_batch_size[ScanType.HIGH.value]
+            )
             trainer = Trainer(
                 train_iterations,
                 val_iterations,
@@ -162,15 +166,16 @@ class TrainManager:
                 critic_class,
                 generator_optim_class,
                 critic_optim_class,
-                # train_bantch_size * 2 == [low batch, high batch]
-                HULoss(*scaled_HU_bounds, (train_batch_size * 2, 1, *train_patch_size)),
+                HULoss(*scaled_HU_bounds, (train_subopt_bs, 1, *train_patch_size)),
                 logger_interface,
-                CHECKPOINTS_DIR / run_id,
+                val_batch_size,
+                checkpoint_dir=CHECKPOINTS_DIR / run_id,
                 weight_clip=weight_clip,
                 generator_lr_scheduler_class=critic_lr_scheduler_class,
                 critic_lr_scheduler_class=critic_lr_scheduler_class,
                 device=self.device,
                 checkpoint_every=checkpoint_every,
+                rng=rng,
             )
 
             critic_size = count_parameters(trainer.critic)

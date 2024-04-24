@@ -2,11 +2,8 @@ from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
+import numpy as np
 import torch
-from batchgenerators.dataloading.multi_threaded_augmenter import MultiThreadedAugmenter
-from batchgenerators.dataloading.nondet_multi_threaded_augmenter import (
-    NonDetMultiThreadedAugmenter,
-)
 from torch import Tensor, nn, profiler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -25,13 +22,12 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO reproduce Roel's work: 2D image logger, 2D gen & discriminator
 # TODO evaluation metrics
-# TODO train with better ResNet blocks + initialize from pretrained
+# TODO train with better ResNet blocks // initialize from pretrained
 
 # TODO ask Roel: upsampling as part of generator or only inference hack?
 
-# TODO remove globals from TrainManager
+# TODO remove globals from TrainManager so it can be ported outside train.py
 # TODO exception handling LoggerInterface
 # TODO parallelize cval runs: multiple processes & multiple GPUs
 
@@ -54,8 +50,9 @@ class Trainer:
         critic_optim_class: partial,
         hu_loss_instance: nn.Module,
         logger_interface: Union[SingleThreadedLogger, MultiThreadedLogger],
-        checkpoint_dir: Union[str, Path],
+        val_batch_size: Dict[int, int],
         device: torch.device,
+        checkpoint_dir: Optional[Union[str, Path]] = None,
         weight_clip: Optional[float] = None,
         generator_lr_scheduler_class: Optional[partial] = None,
         critic_lr_scheduler_class: Optional[partial] = None,
@@ -64,9 +61,19 @@ class Trainer:
         gan_loss_weight: float = 1.0,
         gp_weight: float = 10,
         checkpoint_every: Optional[int] = 1000,
+        rng: Optional[np.random.Generator] = None,
     ):
+        val_subopt_patches = (
+            val_batch_size[ScanType.HIGH.value] + val_batch_size[ScanType.LOW.value]
+        )
+        self.val_subopt_samples = val_subopt_patches * val_iterations
+        self.val_tot_samples = (
+            val_subopt_patches + val_batch_size[ScanType.OPT.value]
+        ) * val_iterations
+        self.rng = rng
         self.device = device
         logger.info("Using device: %s", self.device)
+        self.train_log_sample_size, self.val_log_sample_size = None, None
 
         self.train_iterations = train_iterations
         self.val_iterations = val_iterations
@@ -98,12 +105,13 @@ class Trainer:
         self.loss_HU = hu_loss_instance
         self.logger_interface = logger_interface
 
-        self.checkpoint_every = checkpoint_every
-        self.checkpoint_dir = Path(checkpoint_dir)
-        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
-
         self.iteration = 0
-        self.load_checkpoint(find_latest_checkpoint(self.checkpoint_dir))
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_dir = checkpoint_dir
+        if self.checkpoint_dir is not None:
+            self.checkpoint_dir = Path(self.checkpoint_dir)
+            self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
+            self.load_checkpoint(find_latest_checkpoint(self.checkpoint_dir))
 
     def train_critic(
         self, real: Tensor, reconstructions: Tensor, retain_graph: bool
@@ -118,11 +126,12 @@ class Trainer:
         loss_critic: Tensor = self.gan_loss_w * self.loss_GAN(fake_logits, real_logits)
         if self.weight_clip is None:
             loss_critic += wgan_gradient_penalty(
-                real.repeat((2,) + (1,) * len(real.shape[1:])),
+                real,
                 reconstructions,
                 self.critic,
                 device=self.device,
                 lambda_=self.gp_w,
+                rng=self.rng,
             )
 
         loss_critic.backward(retain_graph=retain_graph and self.weight_clip is None)
@@ -133,8 +142,7 @@ class Trainer:
         if self.lr_scheduler_D is not None:
             self.lr_scheduler_D.step()
 
-        real_logits = real_logits.repeat((2,) + (1,) * len(real_logits.shape[1:]))
-        return {"D": loss_critic, "D-real-fake-delta": real_logits - fake_logits}
+        return {"D": loss_critic, "D-real": real_logits, "D-fake": fake_logits}
 
     def train_generator(
         self, inputs: Tensor, reconstructions: Tensor, centerlines_masks: Tensor
@@ -182,13 +190,20 @@ class Trainer:
             )
 
         if iteration % self.log_images_every == 0:
+            if self.train_log_sample_size is None:
+                self.train_log_sample_size = 64
+                if len(opt_hat.shape) != 5:
+                    bs = (len(x["data"]) for x in patches)
+                    self.train_log_sample_size = min(*bs, self.train_log_sample_size)
+            cut = len(low["data"])
             self.logger_interface(
                 patches,
-                [None, *opt_hat.chunk(2)],
-                [None, *attenuation.chunk(2)],
+                [None, opt_hat[:cut], opt_hat[cut:]],
+                [None, attenuation[:cut], attenuation[cut:]],
                 list(ScanType),
                 iteration,
                 "train",
+                self.train_log_sample_size,
             )
 
     def fit(
@@ -200,7 +215,6 @@ class Trainer:
         self.generator.train()
         self.critic.train()
         # start batchgenerator's async augmenters
-        self.retrieve_batch_size(train_loaders[ScanType.OPT.value], "train")
         self._manage_augmenters([train_loaders, val_loaders], "start")
 
         for iteration in trange(self.iteration, self.train_iterations, desc="Train"):
@@ -231,7 +245,6 @@ class Trainer:
     def validate(self, val_loaders: Dict[int, BGenAugmenter], train_iteration: int):
         self.critic.eval()
         self.generator.eval()
-        self.retrieve_batch_size(val_loaders[ScanType.OPT.value], "val")
 
         (
             loss_sim,
@@ -272,6 +285,13 @@ class Trainer:
                     loggable.append([batch, sample_hat, attenuation])
                     if len(loggable) == (len(ScanType) - 1):
                         patches, reconstructions, attenuations = list(zip(*loggable))
+                        if self.val_log_sample_size is None:
+                            self.val_log_sample_size = 64
+                            if len(reconstructions[0].shape) != 5:  # not 3D
+                                bs = (len(x["data"]) for x in patches)
+                                self.val_log_sample_size = min(
+                                    *bs, self.val_log_sample_size
+                                )
                         self.logger_interface(
                             patches,
                             list(reconstructions),
@@ -279,6 +299,7 @@ class Trainer:
                             list(ScanType)[1:],
                             train_iteration,
                             "validation",
+                            self.val_log_sample_size,
                         )
                         # eliminate references to free up GPU memory
                         for s, r, a in loggable:
@@ -332,33 +353,7 @@ class Trainer:
         assert event in ["start", "end"], f"Unknown event {event!r}"
         for aug_dict in augmenters:
             for augmenter in aug_dict.values():
-                if isinstance(
-                    augmenter, (MultiThreadedAugmenter, NonDetMultiThreadedAugmenter)
-                ):
-                    if event == "start":
-                        augmenter.restart()
-                    else:
-                        augmenter._finish()
-
-    def retrieve_batch_size(self, augmenter: BGenAugmenter, stage: str):
-        attr_bs = f"{stage}_bs"
-        if getattr(self, attr_bs, None) is None:
-            if isinstance(
-                augmenter, (MultiThreadedAugmenter, NonDetMultiThreadedAugmenter)
-            ):
-                aug_attr_name = "generator"
-            else:
-                aug_attr_name = "data_loader"
-            setattr(self, attr_bs, getattr(augmenter, aug_attr_name).batch_size)
-            setattr(self, f"{stage}_it_patches", len(ScanType) * getattr(self, attr_bs))
-            setattr(
-                self,
-                f"{stage}_tot_patches",
-                getattr(self, f"{stage}_iterations")
-                * getattr(self, f"{stage}_it_patches"),
-            )
-            if stage == "val":
-                # assume dataloaders with same batch size across classes
-                self.val_opt_samples = self.val_iterations * self.val_bs
-                self.val_subopt_samples = 2 * self.val_opt_samples
-                self.val_tot_samples = self.val_opt_samples + self.val_subopt_samples
+                if event == "start" and hasattr(augmenter, "restart"):
+                    augmenter.restart()
+                elif hasattr(augmenter, "_finish"):
+                    augmenter._finish()
