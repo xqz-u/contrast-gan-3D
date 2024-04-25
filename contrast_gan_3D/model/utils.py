@@ -71,7 +71,7 @@ def compute_convolution_filters_shape(
 ) -> List[int]:
     printables = [f"Input shape: {list(input_shape)}"]
     for n, m in model.named_modules():
-        if isinstance(m, (nn.Conv3d, nn.Conv2d)):
+        if type(m) in (nn.Conv3d, nn.Conv2d, nn.ConvTranspose3d, nn.ConvTranspose2d):
             kwargs = {}
             if isinstance(m, (nn.ConvTranspose3d, nn.ConvTranspose2d)):
                 kwargs = {"transpose_output_padding": m.output_padding[0]}
