@@ -64,7 +64,7 @@ critic_optim_class = partial(Adam, lr=lr, betas=betas)
 critic_lr_scheduler_class = partial(MultiStepLR, milestones=milestones, gamma=lr_gamma)
 
 # ------------ DATA ------------
-n_cval_folds = 2
+n_cval_folds = 1
 
 train_patch_size = TRAIN_PATCH_SIZE
 val_patch_size = VAL_PATCH_SIZE

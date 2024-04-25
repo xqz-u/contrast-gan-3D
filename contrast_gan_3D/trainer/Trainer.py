@@ -24,14 +24,14 @@ logger = create_logger(name=__name__)
 
 # TODO evaluation metrics
 # TODO train with better ResNet blocks // initialize from pretrained
+# TODO BETTER validation metrics
 
 # TODO ask Roel: upsampling as part of generator or only inference hack?
 
 # TODO remove globals from TrainManager so it can be ported outside train.py
 # TODO exception handling LoggerInterface
-# TODO parallelize cval runs: multiple processes & multiple GPUs
 
-# TODO wrong validation metrics ?
+# TODO parallelize cval runs: multiple processes & multiple GPUs
 # TODO AMP, DDP ?
 
 

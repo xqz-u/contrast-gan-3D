@@ -14,7 +14,7 @@ from batchgenerators.dataloading.nondet_multi_threaded_augmenter import (
 )
 from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from contrast_gan_3D.alias import BGenAugmenter, FoldType, Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
@@ -37,20 +37,27 @@ def find_latest_checkpoint(ckpt_dir: Union[Path, str]) -> Optional[Path]:
 def cval_paths(
     n_folds: int,
     *dataset_paths: Iterable[Union[Path, str]],
+    test_size: float = 0.2,
     seed: Optional[int] = None,
 ) -> Tuple[List[FoldType], List[FoldType]]:
-    X, Y, train, val = [], [], [], []
-
+    X, Y = [], []
     for df_path in dataset_paths:
         df = pd.read_excel(df_path)
         X += df["path"].values.tolist()
         Y += df["label"].values.tolist()
     X, Y = np.array(X), np.array(Y)
 
-    cval = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    for train_idx, val_idx in cval.split(X, Y):
-        train.append(list(zip(X[train_idx], Y[train_idx])))
-        val.append(list(zip(X[val_idx], Y[val_idx])))
+    if n_folds == 1:
+        xtrain, xval, ytrain, yval = train_test_split(
+            X, Y, test_size=test_size, shuffle=True, stratify=Y, random_state=seed
+        )
+        train, val = [list(zip(xtrain, ytrain))], [list(zip(xval, yval))]
+    else:
+        train, val = [], []
+        cval = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        for train_idx, val_idx in cval.split(X, Y):
+            train.append(list(zip(X[train_idx], Y[train_idx])))
+            val.append(list(zip(X[val_idx], Y[val_idx])))
 
     return train, val
 
