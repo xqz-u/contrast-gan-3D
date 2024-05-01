@@ -22,13 +22,16 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO evaluation metrics
 # TODO train with more generator updates & smaller learning rate
-# TODO dataset recreation (get rid of HD5 // throw memmaps in there?)
+
+# TODO evaluation metrics
 # TODO 3D inference: gaussian smoothing in corrected patchwork
-# TODO BETTER validation metrics
 # TODO train with better ResNet blocks // initialize from pretrained
 
+# TODO dataset recreation (get rid of HD5 // throw memmaps in there?)
+# TODO BETTER validation metrics
+# TODO upload configuration files to fully restore restarted runs - not done atm
+#      since complex dtypes are converted to strings and need to be evaluated
 # TODO remove globals from TrainManager so it can be ported outside train.py
 # TODO exception handling LoggerInterface
 
@@ -192,8 +195,8 @@ class Trainer:
 
         if iteration % self.log_images_every == 0:
             if self.train_log_sample_size is None:
-                self.train_log_sample_size = 64
-                if len(opt_hat.shape) != 5:
+                self.train_log_sample_size = 32
+                if len(opt_hat.shape) != 5:  # 2D case
                     bs = (len(x["data"]) for x in patches)
                     self.train_log_sample_size = min(*bs, self.train_log_sample_size)
             cut = len(low["data"])
@@ -247,14 +250,8 @@ class Trainer:
         self.critic.eval()
         self.generator.eval()
 
-        (
-            loss_sim,
-            loss_G,
-            loss_real_D,
-            loss_fake_D,
-            D_real_tot,
-            D_fake_tot,
-        ) = torch.zeros(6, dtype=torch.float32, device=self.device)
+        z = torch.zeros(6, dtype=torch.float32, device=self.device)
+        loss_sim, loss_G, loss_real_C, loss_fake_C, C_real, C_fake = z.chunk(6)
         loggable = []
 
         with torch.no_grad():
@@ -267,18 +264,18 @@ class Trainer:
                 sample = batch["data"].to(self.device, non_blocking=True)
 
                 if scan_type_enum == ScanType.OPT:
-                    D_real = self.critic(sample)
+                    real_logits = self.critic(sample)
 
-                    loss_real_D -= self.loss_GAN(D_real)
-                    D_real_tot += D_real.sum()
+                    loss_real_C -= self.loss_GAN(real_logits)
+                    C_real += real_logits.sum()
                 else:
                     attenuation = self.generator(sample)
                     sample_hat = sample - attenuation
-                    D_fake = self.critic(sample_hat)
-                    batch_loss_G = self.loss_GAN(D_fake)
+                    fake_logits = self.critic(sample_hat)
+                    batch_loss_G = self.loss_GAN(fake_logits)
 
-                    D_fake_tot += D_fake.sum()
-                    loss_fake_D += batch_loss_G
+                    C_fake += fake_logits.sum()
+                    loss_fake_C += batch_loss_G
                     loss_G -= batch_loss_G
                     loss_sim += self.loss_similarity(sample_hat, sample)
 
@@ -287,8 +284,8 @@ class Trainer:
                     if len(loggable) == (len(ScanType) - 1):
                         patches, reconstructions, attenuations = list(zip(*loggable))
                         if self.val_log_sample_size is None:
-                            self.val_log_sample_size = 64
-                            if len(reconstructions[0].shape) != 5:  # not 3D
+                            self.val_log_sample_size = 32
+                            if len(reconstructions[0].shape) != 5:  # 2D case
                                 bs = (len(x["data"]) for x in patches)
                                 self.val_log_sample_size = min(
                                     *bs, self.val_log_sample_size
@@ -311,10 +308,10 @@ class Trainer:
         self.generator.train()
 
         val_loss = {
-            "D": (loss_real_D + loss_fake_D) / self.val_tot_samples,
+            "D": (loss_real_C + loss_fake_C) / self.val_tot_samples,
             "G": loss_G / self.val_subopt_samples,
             "sim": loss_sim / self.val_subopt_samples,
-            "D-real-fake-delta": (D_real_tot - D_fake_tot) / self.val_tot_samples,
+            "D-real-fake-delta": (C_real - C_fake) / self.val_tot_samples,
         }
         self.logger_interface.logger.log_loss(val_loss, train_iteration, "validation")
 
@@ -340,7 +337,7 @@ class Trainer:
     def load_checkpoint(self, ckpt_path: Optional[Path]):
         if ckpt_path is not None and ckpt_path.is_file():
             logger.info("Resuming run from '%s'", str(ckpt_path))
-            checkpoint: dict = torch.load(ckpt_path, map_location=torch.device("cpu"))
+            checkpoint: dict = torch.load(ckpt_path, map_location="cpu")
             for k, v in checkpoint.items():
                 if k in self.model_torch_attrs:
                     if v is not None:

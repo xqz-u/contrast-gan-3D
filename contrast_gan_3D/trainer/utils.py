@@ -137,15 +137,12 @@ def global_overrides(config_path: Path):
     if not os.path.exists(config_path):
         print("Error: Config file does not exist.")
         return
-
     # Get the directory and file name from the path
     config_dir, config_file = os.path.split(config_path)
     config_name, _ = os.path.splitext(config_file)
-
     # Add the directory to the sys.path if not already there
     if config_dir not in sys.path:
         sys.path.append(config_dir)
-
     # Use importlib to load the module
     return importlib.import_module(config_name)
 

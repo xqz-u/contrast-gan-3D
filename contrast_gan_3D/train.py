@@ -21,7 +21,7 @@ from contrast_gan_3D.config import CHECKPOINTS_DIR, LOGS_DIR
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.model.loss import HULoss
 from contrast_gan_3D.model.utils import count_parameters
-from contrast_gan_3D.trainer import utils as train_utils
+from contrast_gan_3D.trainer import utils as train_u
 from contrast_gan_3D.trainer.Trainer import Trainer
 from contrast_gan_3D.utils.logging_utils import create_logger
 
@@ -30,13 +30,6 @@ matplotlib.use("agg")  # avoid MatplotLib warning about figures in threads
 make_timestamp = lambda: time.strftime("%m_%d_%Y_%H_%M_%S")
 
 logger = create_logger(name=__name__)
-
-
-def update_globals(override_module):
-    if override_module is not None:
-        logger.info("Reading overrides from '%s'", str(override_module))
-        override_module = train_utils.global_overrides(override_module)
-        globals().update(vars(override_module))
 
 
 def maybe_create_profiler(
@@ -68,7 +61,9 @@ def maybe_create_profiler(
 class TrainManager:
     wandb_project: str
     wandb_entity: str
-    restart_run_id: Optional[str] = None
+    data_only: bool
+    conf_overwrites: Optional[Path] = None
+    wandb_run_id: Optional[str] = None
     device_idx: Optional[int] = None
     profiler_dir: Optional[Path] = None
     device: torch.device = field(init=False, default=None)
@@ -83,46 +78,57 @@ class TrainManager:
     has_restarted: bool = field(init=False, default=False)
 
     def __post_init__(self):
+        self.maybe_update_globals()
         # reproducibility
         if seed is not None:
             logger.info("Using seed %d", seed)
             utils.seed_everything(seed)
         else:
-            # NOTE increase speed but halts reproducibility, turn off afterwards
+            # NOTE increase speed but halts reproducibility
             logger.info("Set CUDNN in benchmark mode")
             torch.backends.cudnn.benchmark = True
-        # restart interrupted experiment
-        if self.restart_run_id is not None:
-            assert (
-                self.wandb_entity is not None
-            ), "Give the wandb entity of the restarted run."
-            run = wandb.Api().run(
-                "/".join([self.wandb_entity, self.wandb_project, self.restart_run_id])
-            )
-            self.group = run.group
-            self.start_fold = run.config["fold"]
+        # possibly restart interrupted experiment
+        if self.wandb_run_id is None:
+            train_folds, val_folds = train_u.cval_paths(n_cval_folds, *dataset_paths)
+        else:
+            assert self.wandb_entity is not None, "Missing wandb entity."
+            run_path = [self.wandb_entity, self.wandb_project, self.wandb_run_id]
+            run = wandb.Api().run("/".join(run_path))
             train_folds = run.config["train_folds"]
             val_folds = run.config["val_folds"]
-            logger.info(
-                "RESUME run '%s' experiment '%s' fold %d",
-                self.restart_run_id,
-                self.group,
-                self.start_fold,
-            )
-        else:
-            train_folds, val_folds = train_utils.cval_paths(
-                n_cval_folds, *dataset_paths
-            )
+            logger.info("Using same train/val data as run '%s'", self.wandb_run_id)
+            if not self.data_only:
+                # restart a run - not just using that run's train/val data
+                self.group = run.group
+                self.start_fold = run.config["fold"]
+                logger.info(
+                    "RESUME run '%s' experiment '%s' fold %d",
+                    self.wandb_run_id,
+                    self.group,
+                    self.start_fold,
+                )
         # other setup attributes
         self.train_val_folds = (train_folds, val_folds)
         self.device = utils.set_GPU(self.device_idx)
         self.profiler = maybe_create_profiler(self.profiler_dir, self.device)
 
+    def maybe_update_globals(self):
+        if self.conf_overwrites is not None:
+            if self.wandb_run_id is not None and not self.data_only:
+                # NOTE when restarting a run, check the right overwrites are being
+                # used from the stopped run's wandb Overview page, section 'Command'
+                logger.warning(
+                    "Restart run '%s' reading overwrites from file", self.wandb_run_id
+                )
+            logger.info("Reading overwrites from '%s'", str(self.conf_overwrites))
+            overwrite_module = train_u.global_overrides(self.conf_overwrites)
+            globals().update(vars(overwrite_module))
+
     def generate_run_id(self) -> str:
-        if self.restart_run_id is not None and not self.has_restarted:
+        if not any([self.wandb_run_id is None, self.data_only, self.has_restarted]):
             self.has_restarted = True
-            return self.restart_run_id
-        return generate_id()
+            return self.wandb_run_id
+        return generate_id()  # new id for each cross validation run
 
     def __call__(self):
         train_folds, val_folds = self.train_val_folds
@@ -133,7 +139,7 @@ class TrainManager:
         ):
             run_id = self.generate_run_id()
 
-            train_loaders, val_loaders = train_utils.create_dataloaders(
+            train_loaders, val_loaders = train_u.create_dataloaders(
                 train_fold,
                 val_fold,
                 train_patch_size,
@@ -193,7 +199,7 @@ class TrainManager:
                 "generator_size": generator_size,
                 "critic_size": critic_size,
             }
-            experiment_config = local_conf | train_utils.config_from_globals(globals())
+            experiment_config = local_conf | train_u.config_from_globals(globals())
             pprint(experiment_config)
 
             logger.info("FOLD %d", fold)
@@ -219,9 +225,9 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--conf-overrides",
+        "--conf-overwrites",
         type=Path,
-        help="Optional path to a .py file defining experiment variables overrides.",
+        help="Optional path to a .py file defining experiment variables overwrites.",
         default=None,
     )
     parser.add_argument("--wandb-project", type=str, default="contrast-gan-3D")
@@ -236,12 +242,19 @@ if __name__ == "__main__":
         "--profiler-dir", type=Path, default=None, help="torch-tb-profiler logs dir."
     )
     parser.add_argument("--device", type=int, default=None, help="CUDA device index")
+    parser.add_argument(
+        "--data-only",
+        default=False,
+        action="store_true",
+        help="Restart a run with a wandb-run-id or start a new run with same train/validation data from wandb-run-id.",
+    )
     args = parser.parse_args()
 
-    update_globals(args.conf_overrides)
     TrainManager(
         args.wandb_project,
         args.wandb_entity,
+        args.data_only,
+        args.conf_overwrites,
         args.wandb_run_id,
         args.device,
         args.profiler_dir,
