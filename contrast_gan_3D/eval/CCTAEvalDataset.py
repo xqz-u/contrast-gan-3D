@@ -1,8 +1,5 @@
-from typing import Tuple
-
 import numpy as np
 from patchly.sampler import GridSampler
-from torch import Tensor
 from torch.utils.data import Dataset
 
 from contrast_gan_3D.data.Scaler import Scaler
@@ -17,10 +14,10 @@ class CCTAEvalDataset3D(Dataset):
     def __len__(self) -> int:
         return len(self.sampler)
 
-    def __getitem__(self, index: int) -> Tuple[Tensor, Tensor]:
+    def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
         patch, bbox = self.sampler[index]
         # add channel dimension and scale patch
-        return self.scaler(patch)[None], bbox
+        return self.scaler(patch.astype(np.float32))[None], bbox
 
 
 class CCTAEvalDataset2D(Dataset):
@@ -32,6 +29,6 @@ class CCTAEvalDataset2D(Dataset):
     def __len__(self) -> int:
         return self.ccta.shape[-1]
 
-    def __getitem__(self, index: int) -> Tensor:
+    def __getitem__(self, index: int) -> np.ndarray:
         # add channel dimension and scale patch, shape: (1,512,512)
         return self.scaler(self.ccta[..., index])[None]
