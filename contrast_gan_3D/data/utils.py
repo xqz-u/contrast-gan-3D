@@ -1,18 +1,53 @@
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
-import SimpleITK as sitk
 import torch
-from tqdm.auto import tqdm
+from batchgenerators.utilities.file_and_folder_operations import (
+    load_pickle,
+    write_pickle,
+)
 
 from contrast_gan_3D.alias import Array
-from contrast_gan_3D.constants import MAX_HU, MIN_HU
-from contrast_gan_3D.data.HD5Scan import HD5Scan
+from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import io_utils, logging_utils
 
 logger = logging_utils.create_logger(name=__name__)
+
+
+def create_patient(
+    ccta_path: str | Path,
+    centerlines_dir: str | Path,
+    ostia_path: str | Path,
+    out_dir: str | Path,
+):
+    img, meta = io_utils.load_sitk_image(ccta_path)  # img: WHD
+    ostia_world, _ = io_utils.load_mevis_coords(ostia_path)  # (2, [xyz])
+    centerlines_world = io_utils.load_centerlines(centerlines_dir)  # (N, [xyzr])
+    centerlines_mask = geom.world_to_grid_coords(
+        centerlines_world[..., :3], meta["offset"], meta["spacing"], img.shape
+    )  # WHD
+    # stack 3D scan & mask into one 4D array
+    scan_and_mask = np.stack([img, centerlines_mask], axis=-1)
+
+    out_dir = Path(out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    patient_name = io_utils.stem(ccta_path)
+
+    np.save(out_dir / f"{patient_name}.npy", scan_and_mask)
+    meta = meta | {
+        "ostia_world": ostia_world,
+        "centerlines_world": centerlines_world,
+        "name": patient_name,
+    }
+    write_pickle(meta, out_dir / f"{patient_name}_meta.pkl")
+
+
+def load_patient(patient_name: str) -> tuple[np.ndarray, dict]:
+    patient = np.load(patient_name + ".npy", mmap_mode="r+")
+    meta = load_pickle(patient_name + "_meta.pkl")
+    return patient, meta
 
 
 def create_ostia_dataframe(
@@ -76,24 +111,3 @@ def minmax_norm(
         value_range = (x.min(), x.max())
     low, high = value_range
     return (x - low) / max(high - low, 1e-5)
-
-
-# NOTE use only the train dataset mean, exclude test data! e.g. in cval loop
-def compute_dataset_mean(*ct_scan_paths: Iterable[Union[str, Path]]):
-    sum_, n_pix = 0, 0
-    for image_path in tqdm(ct_scan_paths):
-        image_path = Path(image_path)
-        if image_path.suffix == ".h5":
-            with HD5Scan(image_path) as scan:
-                image = scan.ccta[::]
-        else:
-            # same preprocessing used to create .h5 files, besides orientation adjustment
-            image = sitk.GetArrayFromImage(sitk.ReadImage(image_path)).astype(np.int16)
-            diff = image.min() - MIN_HU
-            if diff >= abs(MIN_HU):
-                image -= diff
-            image = np.clip(image, MIN_HU, MAX_HU)
-            # sum all voxel values
-        sum_ += image.sum()
-        n_pix += np.prod(image.shape)
-    return sum_ / n_pix

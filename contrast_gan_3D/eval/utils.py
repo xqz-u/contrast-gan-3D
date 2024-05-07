@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 
 from contrast_gan_3D.alias import FoldType, ScanType
-from contrast_gan_3D.data.HD5Scan import HD5Scan
+from contrast_gan_3D.data import utils as data_u
 from contrast_gan_3D.eval.CCTAContrastCorrector import CCTAContrastCorrector
 from contrast_gan_3D.trainer.utils import divide_scans_in_fold
 from contrast_gan_3D.utils import geometry as geom
@@ -19,22 +19,28 @@ def collect_voxels(
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     all_ctls, all_corrected_ctls = [[]], [[]]
     all_ostias, all_corrected_ostias = [[]], [[]]
+
     for scan_path in scan_paths:
-        with HD5Scan(scan_path) as scan:
-            offset, spacing = scan.meta["offset"], scan.meta["spacing"]
-            ccta, centerlines = scan.ccta[::], scan.labelmap[::].astype(bool)
-            ostias = geom.world_to_grid_coords(
-                scan.centerlines.attrs["ostia"], offset, spacing, ccta.shape
-            ).astype(bool)
-            if corrector is not None:
-                corrected_ccta = corrector(ccta, desc=str(scan_path))
-                torch.cuda.empty_cache()  # FIXME why is this needed to avoid errors?!
-                if savepath is not None:
-                    corrector.save_scan(corrected_ccta, offset, spacing, savepath)
-                all_corrected_ctls.append(corrected_ccta[centerlines].numpy())
-                all_corrected_ostias.append(corrected_ccta[ostias].numpy())
+        scan, meta = data_u.load_patient(str(scan_path))
+        offset, spacing = meta["offset"], meta["spacing"]
+        ccta, centerlines = scan[..., 0], scan[..., 1]
+
+        ostias = geom.world_to_grid_coords(
+            meta["ostia_world"], offset, spacing, scan.shape[:-1]
+        ).astype(bool)
+
+        if corrector is not None:
+            corrected_ccta = corrector(ccta, desc=str(scan_path))
+            torch.cuda.empty_cache()  # FIXME why is this needed to avoid errors?!
+            if savepath is not None:
+                corrector.save_scan(corrected_ccta, offset, spacing, savepath)
+
+            all_corrected_ctls.append(corrected_ccta[centerlines].numpy())
+            all_corrected_ostias.append(corrected_ccta[ostias].numpy())
+
         all_ctls.append(ccta[centerlines])
         all_ostias.append(ccta[ostias])
+
     raw = {"centerlines": np.hstack(all_ctls), "ostia": np.hstack(all_ostias)}
     corrected = {
         "centerlines": np.hstack(all_corrected_ctls),
@@ -72,28 +78,25 @@ def plot_histograms(
 ) -> Axes:
     if ax is None:
         _, ax = plt.subplots()
-    _, edges0, *_ = ax.hist(
+    ax.hist(
         subopt,
         bins=nbins,
         alpha=alpha,
         density=True,
         label="Suboptimal",
     )
-    _, edges1, *_ = ax.hist(
+    ax.hist(
         corrected_subopt,
         bins=nbins,
         alpha=alpha,
         density=True,
         label="Corrected Suboptimal",
     )
-    all_edges = np.hstack([edges0, edges1])
-    edge_min, edge_max = all_edges.min(), all_edges.max()
 
+    offset = 0.01
     bins, edges = np.histogram(opt, nbins, density=True)
-    if edges.min() > edge_min:
-        edges, bins = np.insert(edges, 0, edge_min), np.insert(bins, 0, np.zeros(1))
-    if edges.max() < edge_max:
-        edges, bins = np.append(edges, edge_max), np.append(bins, np.zeros(1))
+    edges = np.hstack([edges.min() - offset, edges, edges.max() + offset])
+    bins = np.hstack([0, bins, 0])
 
     X = np.dstack([edges[:-1], edges[1:]]).ravel()
     Y = np.dstack([bins, bins]).ravel()

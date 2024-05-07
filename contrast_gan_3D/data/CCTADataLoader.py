@@ -1,18 +1,12 @@
-from typing import List, Optional, Tuple
-
 import numpy as np
 from batchgenerators.augmentations.crop_and_pad_augmentations import crop
 from batchgenerators.augmentations.utils import pad_nd_image
 from batchgenerators.dataloading.data_loader import DataLoader
-from torch.utils.data import default_collate
 
 from contrast_gan_3D.alias import Shape3D
-from contrast_gan_3D.data.HD5Scan import HD5Scan
+from contrast_gan_3D.data import utils as data_u
 from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.utils import geometry as geom
-from contrast_gan_3D.utils.logging_utils import create_logger
-
-logger = create_logger(name=__name__)
 
 
 # inspired from
@@ -20,7 +14,7 @@ logger = create_logger(name=__name__)
 class CCTADataLoader(DataLoader):
     def __init__(
         self,
-        data: List[str],
+        data: list[str],
         patch_shape: Shape3D,
         batch_size: int,
         rng: np.random.Generator,
@@ -28,7 +22,7 @@ class CCTADataLoader(DataLoader):
         infinite: bool = True,
         shuffle=True,
         num_threads_in_multithreaded=1,
-        seed_for_shuffle: Optional[int] = None,
+        seed_for_shuffle: int | None = None,
         return_incomplete=False,
         sampling_probabilities=None,
     ):
@@ -54,62 +48,60 @@ class CCTADataLoader(DataLoader):
     def __len__(self) -> int:
         return len(self.indices)
 
-    def get_samplable_2D(self, patient: HD5Scan) -> Tuple[np.ndarray, np.ndarray, bool]:
+    def get_samplable_2D(
+        self, data_and_seg: np.memmap | np.ndarray, meta: dict
+    ) -> tuple[np.ndarray, bool]:
         sample_along_centerlines = self.rng.random() < 0.5
         if sample_along_centerlines:
             # extract patch from slice with *at least one* ensured centerline
-            centerline_idx = self.rng.integers(0, len(patient.centerlines))
+            centerlines = meta["centerlines_world"]
+            centerline_idx = self.rng.integers(0, len(centerlines))
             x, y, z = geom.world_to_image_coords(
-                patient.centerlines[centerline_idx, :3],
-                patient.meta["offset"],
-                patient.meta["spacing"],
+                centerlines[centerline_idx, :3], meta["offset"], meta["spacing"]
             )
             bbox = geom.get_patch_bounds(
-                self.patch_shape, patient.ccta[..., z].shape, np.array([y, x])
+                self.patch_shape, data_and_seg[..., z, 0].shape, np.array([y, x])
             )
-            indexer = [slice(*bbox[0]), slice(*bbox[1]), z]
+            indexer = [slice(*bbox[0]), slice(*bbox[1]), z]  # indexing on xyz
         else:  # extract patch from random slice
-            indexer = [..., self.rng.choice(patient.ccta.shape[-1])]
-        # patch and mask are in HW order
-        return (
-            patient.ccta[*indexer],
-            patient.labelmap[*indexer],
-            not sample_along_centerlines,
-        )
+            indexer = [..., self.rng.choice(data_and_seg.shape[2])]  # indexing on xyz
+        # patch and mask are in WH order, final batch shape: BCWH
+        return (data_and_seg[*indexer, :], not sample_along_centerlines)
 
-    # NOTE would be better to use a memmap recognized by batchegenerators
-    def get_samplable_3D(self, patient: HD5Scan) -> Tuple[np.ndarray, np.ndarray, bool]:
-        return patient.ccta[::], patient.labelmap[::], True  # HWD
+    def get_samplable_3D(
+        self, data_and_seg: np.memmap | np.ndarray, *_
+    ) -> tuple[np.ndarray, bool]:
+        return data_and_seg, True  # WHD
 
-    def generate_one(self, idx: int) -> Tuple[np.ndarray, np.ndarray, dict, str]:
-        with HD5Scan(self._data[idx]) as patient:
-            ccta, arteries_mask, do_crop = self.get_samplable(patient)
-        patch = ccta.swapaxes(0, 1)[None, None]
-        mask = arteries_mask.swapaxes(0, 1)[None, None]
+    def generate_one(self, idx: int) -> tuple[np.ndarray, np.ndarray, str]:
+        ccta_and_seg, meta = data_u.load_patient(self._data[idx])  # 4D: WHD[HU,label]
+        ccta_and_seg, do_crop = self.get_samplable(ccta_and_seg, meta)
+        ccta_and_seg = ccta_and_seg[None, None]  # `crop` wants BCWH(D)
+        patch, mask = ccta_and_seg[..., 0], ccta_and_seg[..., 1]
         if do_crop:
             # pad if image is smaller than `patch_size`
-            patch = pad_nd_image(patch, self.patch_shape)
-            # `crop` wants BCWH(D)
-            patch, mask = crop(patch, mask, self.patch_shape, crop_type="random")
-        patch, mask = patch.swapaxes(2, 3), mask.swapaxes(2, 3)
-        return self.scaler(patch), mask, patient.meta, patient.name
+            ccta_and_seg = pad_nd_image(ccta_and_seg, (*self.patch_shape, 2))
+            # convert to float to avoid rounding errors while cropping
+            ccta_and_seg = ccta_and_seg.astype(np.float32)
+            patch, mask = crop(
+                ccta_and_seg[..., 0],
+                ccta_and_seg[..., 1],
+                self.patch_shape,
+                crop_type="random",
+            )
+        return self.scaler(patch), mask, meta["name"]
 
     # NOTE could try #4 from
     # https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869
     # to reduce CPU to GPU copy size
     def generate_train_batch(self) -> dict:
-        data = np.zeros(self.batch_shape, dtype=np.float32)  # BCHW(D)
-        masks = np.zeros(self.batch_shape, dtype=np.uint8)
-        metadata, names = [], []
+        data = np.zeros(self.batch_shape, dtype=np.float32)  # BCWH(D)
+        masks = np.zeros(self.batch_shape, dtype=np.float32)
+        names = []
 
         for i, idx in enumerate(self.get_indices()):
-            patch, mask, meta, name = self.generate_one(idx)
+            patch, mask, name = self.generate_one(idx)
             data[i], masks[i] = patch, mask
-            metadata.append(meta), names.append(name)
+            names.append(name)
 
-        return {
-            "data": data,
-            "seg": masks,
-            "meta": default_collate(metadata),
-            "name": default_collate(names),
-        }
+        return {"data": data, "seg": masks, "name": names}
