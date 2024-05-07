@@ -19,8 +19,8 @@ from contrast_gan_3D.utils import geometry as geom
 train_iterations = int(1e4)
 val_iterations = 10
 train_generator_every = 5  # from WGAN paper
-# seed = DEFAULT_SEED
-seed = None
+train_critic_every = 1
+seed = None  # DEFAULT_SEED
 checkpoint_every = int(1e3)
 validate_every = 400
 log_every = 100
@@ -72,7 +72,7 @@ val_patch_size = VAL_PATCH_SIZE
 train_batch_size = {
     v.value: b for v, b in [(ScanType.OPT, 10), (ScanType.LOW, 4), (ScanType.HIGH, 4)]
 }
-val_batch_size = {v.value: 3 for v in list(ScanType)}  # 9
+val_batch_size = {v.value: 3 for v in ScanType}  # 9
 
 num_workers = (12, 6)  # (train, validation)
 
