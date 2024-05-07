@@ -159,43 +159,6 @@ def get_patch_bounds(
     return bbox
 
 
-# NOTE coords is the center of the patch
-def extract_patch(
-    img: Union[Array, h5py.Dataset], size: ArrayShape, coords: np.ndarray
-) -> Tuple[Array, np.ndarray]:
-    # shape: `size`, possibly < `img.shape`
-    bbox = get_patch_bounds(size, img.shape, coords)
-    return img[*[slice(*b) for b in bbox]], bbox
-
-
-def extract_random_patch(
-    img: Union[Array, h5py.Dataset],
-    size: ArrayShape,
-    rng: Optional[Union[np.random.Generator, np.random.RandomState]] = None,
-) -> Tuple[Array, np.ndarray, np.ndarray]:
-    if rng is None:
-        rng = np.random.default_rng()
-    size = utils.parse_patch_size(size, img.shape)
-    # coords is the *center* of the extracted cube
-    sampler = rng.integers if isinstance(rng, np.random.Generator) else rng.randint
-    coords = [
-        sampler(extent, dim_high - extent - mod + 1)
-        for dim_high, extent, mod in zip(img.shape, size // 2, size % 2)
-    ]
-    coords = np.array(coords)
-    return extract_patch(img, size, coords), coords
-
-
-# NOTE used for plotting
-def expand_3D_patch_whole_image(
-    patch: Array, img_shape: Shape3D, size: Shape3D, xyz: np.ndarray
-) -> Array:
-    # shape: `img.shape` - mask of extracted coordinates in original array
-    patch_mask = (np if isinstance(patch, np.ndarray) else torch).zeros(img_shape)
-    patch_mask[*get_patch_bounds(size, img_shape, xyz)] = patch
-    return patch_mask
-
-
 def world_to_grid_coords(
     centerlines: np.ndarray,
     offset: np.ndarray,

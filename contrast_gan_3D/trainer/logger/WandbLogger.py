@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pprint import pprint
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type
 
 import numpy as np
 import torch
@@ -17,6 +17,7 @@ from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.data.utils import minmax_norm
 from contrast_gan_3D.utils import geometry as geom
+from contrast_gan_3D.utils import visualization as viz
 
 
 @dataclass
@@ -49,10 +50,14 @@ class WandbLogger:
         else:
             pprint(log_dict)
 
-    def create_indexer(self, batch_shape: ArrayShape, sample_size: int) -> list:
-        sample_idx = self.rng.integers(batch_shape[0])
+    @staticmethod
+    def create_indexer(
+        batch_shape: ArrayShape, sample_size: int, rng: np.random.Generator
+    ) -> list:
+        # dim 0: B, dim -1: D
+        sample_idx = rng.integers(batch_shape[0])
         slice_idxs = sorted(
-            self.rng.choice(batch_shape[-1], size=sample_size, replace=False)
+            rng.choice(batch_shape[-1], size=sample_size, replace=False)
         )
         return [sample_idx, ..., slice_idxs]
 
@@ -75,7 +80,7 @@ class WandbLogger:
             scans, masks, reconstructions, attenuations
         )
 
-        indexer = self.create_indexer(scans.shape, sample_size)
+        indexer = WandbLogger.create_indexer(scans.shape, sample_size, self.rng)
         sample_idx = indexer[0]
         fig, caption = None, names[sample_idx]
         workspace, caption_cp = f"{stage}/images/{scan_type}", caption
@@ -83,30 +88,25 @@ class WandbLogger:
 
         # show centerlines by scattering manually during training
         if stage == "train" and masks is not None:
-            ctls = masks[indexer].permute(3, 0, 1, 2).to(torch.float16)
+            ctls = masks[indexer].permute(3, 0, 2, 1).to(torch.float16)  # CWHD -> DCHW
             ctls_grid = make_grid(ctls)
-            # DHW -> HWD (yxz)
-            cart = geom.grid_to_cartesian_coords(ctls_grid.permute(1, 2, 0))
+            cart = geom.grid_to_cartesian_coords(ctls_grid)  # DHW (zyx)
             fig, ax = plt.subplots(figsize=self.figsize)
             ax.scatter(
+                cart[:, 2],
                 cart[:, 1],
-                cart[:, 0],
                 c="red",
                 s=plt.rcParams["lines.markersize"] * 0.8,
             )
             caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
 
         slices = self.scaler.unscale(scans[indexer])
-        fig = WandbLogger.create_grid_figure(
-            slices, fig, figsize=self.figsize, **self.grid_args
-        )
+        fig = viz.plot_axial_slices(slices, fig, figsize=self.figsize, **self.grid_args)
         buffer.append(((f"{workspace}/sample", it, fig), {"caption": caption_cp}))
 
         if reconstructions is not None:
             recon = self.scaler.unscale(reconstructions[indexer])
-            fig = WandbLogger.create_grid_figure(
-                recon, figsize=self.figsize, **self.grid_args
-            )
+            fig = viz.plot_axial_slices(recon, figsize=self.figsize, **self.grid_args)
             buffer.append(
                 ((f"{workspace}/reconstruction", it, fig), {"caption": caption})
             )
@@ -114,7 +114,6 @@ class WandbLogger:
         if attenuations is not None:
             fig = self.create_attenuation_grid(attenuations, indexer)
             buffer.append(((f"{workspace}/attenuation", it, fig), {"caption": caption}))
-
         return buffer
 
     def create_attenuation_grid(self, attenuations: Tensor, indexer: list) -> Figure:
@@ -129,29 +128,7 @@ class WandbLogger:
         mappable = cm.ScalarMappable(norm=norm, cmap=self.cmap)
         cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
         cbar.set_ticks(np.linspace(low, high, 5))
-        return WandbLogger.create_grid_figure(attn, fig)
-
-    @staticmethod
-    def create_grid_figure(
-        slices: Union[Tensor, np.ndarray],
-        fig: Optional[Figure] = None,
-        tight: bool = True,
-        figsize: Tuple[int, int] = (10, 10),
-        **grid_args,
-    ) -> Figure:
-        if isinstance(slices, np.ndarray):
-            slices = torch.from_numpy(slices)
-        # CHWD -> DCHW -> C,HxD,WxD
-        grid = make_grid(slices.permute(3, 0, 1, 2), **grid_args)
-        if fig is None:
-            fig, ax = plt.subplots(figsize=figsize)
-        else:
-            ax, *_ = fig.get_axes()
-        ax.imshow(grid.permute(1, 2, 0))
-        ax.set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
-        if tight:
-            fig.tight_layout()
-        return fig
+        return viz.plot_axial_slices(attn, fig)
 
     def log_wandb_image(
         self, tag: str, it: int, fig: Figure, caption: Optional[str] = None
@@ -174,4 +151,5 @@ class WandbLogger2D(WandbLogger):
     use_caption: bool = field(init=False, default=False)
 
     def pre_call_hook(self, *tensors: List[Optional[Tensor]]) -> List[Optional[Tensor]]:
-        return [t if t is None else t.permute((1, 2, 3, 0))[None] for t in tensors]
+        # BCWH -> BCWHD (final B is dummy dimension, D is simulated by old batch size)
+        return [t if t is None else t[..., None].swapaxes(0, -1) for t in tensors]

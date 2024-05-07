@@ -1,15 +1,13 @@
-from collections import defaultdict
 from typing import Iterable, Optional, Tuple, Union
 
-import h5py
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from scipy.stats import norm
+from torchvision.utils import make_grid
 
-from contrast_gan_3D import constants
-from contrast_gan_3D.alias import Array
 from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import logging_utils
@@ -60,106 +58,56 @@ def plot_centerlines_3D(
     return ax
 
 
-# NOTE `slices` shape: HWD (xyz)
+# NOTE assumes `slices` of shape CWHD (D is interpreted as a batch size)
 def plot_axial_slices(
-    slices: np.ndarray,
-    axes: Optional[Union[np.ndarray, Axes]] = None,
+    slices: Union[torch.Tensor, np.ndarray],
+    fig: Optional[Figure] = None,
     tight: bool = True,
-    title: Optional[str] = None,
-    figsize: Tuple[int, int] = (10, 5),
-    cmap: Optional[str] = "gray",
-    **kwargs,
-) -> np.ndarray:
-    if len(slices.shape) < 2:
-        slices = slices[..., None]
-
-    if axes is None:
-        _, axes = plt.subplots(*compute_grid_size(slices.shape[-1]), figsize=figsize)
-    axes = ensure_2D_axes(axes)
-
-    for i, ax in enumerate(axes.flat):
-        if i < slices.shape[-1]:
-            ax.imshow(slices[..., i], cmap=cmap, **kwargs)
-            ax.get_xaxis().set_visible(False)
-            ax.get_yaxis().set_visible(False)
-        else:
-            ax.set_visible(False)
-
-    if title is not None:
-        axes[0, 0].get_figure().suptitle(title)
-
+    figsize: Tuple[int, int] = (10, 10),
+    **grid_args,
+) -> Figure:
+    if isinstance(slices, np.ndarray):
+        slices = torch.from_numpy(slices)
+    # CWHD -> DCHW -> C,HxD,WxD
+    grid = make_grid(slices.permute(3, 0, 2, 1).to(float), **grid_args)
+    if fig is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        ax, *_ = fig.get_axes()
+    ax.imshow(grid.permute(1, 2, 0))
+    ax.set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
     if tight:
-        plt.tight_layout()
+        fig.tight_layout()
+    return fig
 
-    return axes
 
+def plot_axial_slices_and_centerlines(
+    slices: np.ndarray | torch.Tensor,
+    ctls: np.ndarray | torch.Tensor,
+    fig: Figure | None = None,
+    figsisze: tuple[int, int] = (10, 10),
+    **grid_args,
+) -> Figure:
+    assert len(slices.shape) >= 3 and len(ctls.shape) >= 3
+    if len(slices.shape) < 4:
+        slices = slices[None]
+    if len(ctls.shape) < 4:
+        ctls = ctls[None]
+    if not isinstance(ctls, torch.Tensor):
+        ctls = torch.from_numpy(ctls)
 
-# NOTE assumes channel-last images and n/centerlines in image coordinates
-def plot_axial_centerlines(
-    image: Union[np.ndarray, h5py.Dataset],
-    centerlines: np.ndarray,
-    n: Optional[int] = None,
-    rng: Optional[np.random.Generator] = None,
-    axes: Optional[Union[np.ndarray, Axes]] = None,
-    title: Optional[str] = None,
-    **kwargs,
-) -> np.ndarray:
-    if isinstance(centerlines, np.ndarray):
-        cond = centerlines.dtype.kind == "i"
-    else:
-        cond = not torch.is_floating_point(centerlines)
-    assert cond, "Centerlines should be given in image coordinates"
+    fig = plot_axial_slices(slices, fig=fig, figsize=figsisze, **grid_args)
 
-    if n is None:
-        n = len(centerlines)
-    assert n <= len(centerlines), f"Cannot plot {n}/{len(centerlines)} centerlines!"
-    n_lim = 1000
-    if n > n_lim:
-        logger.info(f"Reducing centerline sample size from {n} to {n_lim}")
-        n = n_lim
-
-    if n == len(centerlines):
-        chosen_ctls = centerlines
-    else:
-        if rng is None:
-            rng = np.random.default_rng(seed=constants.DEFAULT_SEED)
-        chosen_ctls = rng.choice(centerlines, n)
-    chosen_ctls.sort(axis=0)
-
-    axes = plot_axial_slices(
-        image[..., np.unique(chosen_ctls[..., 2])], axes=axes, tight=False, **kwargs
+    ctls = ctls.permute(3, 0, 2, 1).to(float)  # CWHD -> DCHW
+    ctls_cart = geom.grid_to_cartesian_coords(make_grid(ctls))  # DHW (zyx)
+    fig.get_axes()[0].scatter(
+        ctls_cart[:, 2],
+        ctls_cart[:, 1],
+        c="red",
+        s=plt.rcParams["lines.markersize"] * 0.8,
     )
 
-    unique_slices_ctls = defaultdict(list)
-    for ctl in chosen_ctls:
-        unique_slices_ctls[ctl[2]].append(ctl[:2])
-    for slice_idx, ctls in unique_slices_ctls.items():
-        unique_slices_ctls[slice_idx] = np.vstack(ctls)
-
-    n_empty_ax = len(axes.flat) - len(unique_slices_ctls)
-    pad_slice_ctls = list(unique_slices_ctls) + [None] * n_empty_ax
-
-    for slice_idx, ax in zip(pad_slice_ctls, axes.flat):
-        if slice_idx is None:
-            ax.set_visible(False)
-        else:
-            slice_ctls = unique_slices_ctls[slice_idx]
-            ax.scatter(slice_ctls[:, 0], slice_ctls[:, 1], c="red", edgecolors="black")
-            ctls_coords = tuple(slice_ctls.flat) + (int(slice_idx),)
-            if len(ctls_coords) > 3:
-                # many centerlines on same slice: only give centerlines' z coord
-                ctls_coords = ctls_coords[-1]
-            ax.set_title(f"{ctls_coords}, {len(slice_ctls)}")
-            ax.get_xaxis().set_visible(False)
-            ax.get_yaxis().set_visible(False)
-
-    full_title = f"{len(chosen_ctls)}/{len(centerlines)} centerlines"
-    if title is not None:
-        full_title = f"{title} {full_title}"
-    axes[0, 0].get_figure().suptitle(full_title)
-    plt.tight_layout()
-
-    return axes
+    return fig
 
 
 # NOTE first dimension: batch size
@@ -280,70 +228,5 @@ def plot_gmm_fitted_ostium_patch(
     ax.plot(x, y.sum(0), lw=3, c=f"C{n_components}", ls="dashed")
     for i, yy in enumerate(y):
         ax.plot(x, yy, lw=3, c=f"C{i}")
-
-    return axes
-
-
-# NOTE possible improvements:
-# - draw a semi-transparent box for patch volume extent
-# - plotly
-def plot_extracted_patch_3D(
-    centerlines_mask: Array,
-    extracted_patch: Array,
-    patch_center: Array,
-    ostia: Optional[Array] = None,
-    figsize: Tuple[int, int] = (10, 5),
-    axes: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    if axes is None:
-        fig = plt.figure(figsize=figsize)
-        ax1 = fig.add_subplot(1, 2, 1, projection="3d")
-        ax2 = fig.add_subplot(1, 2, 2, projection="3d")
-    axes = ensure_2D_axes([ax1, ax2])
-
-    for i, ax in enumerate(axes.flat):
-        assert ax.name == "3d", f"Axis {i} does not support 3D plotting"
-
-    patch_plot_c = ("purple", 1)
-    point_s = 60
-
-    whole_image_patch_mask = geom.expand_3D_patch_whole_image(
-        extracted_patch, centerlines_mask.shape, extracted_patch.shape, patch_center
-    )
-
-    plot_centerlines_3D(
-        geom.grid_to_cartesian_coords(centerlines_mask),
-        color=("C1", 0.1),
-        ax=ax1,
-        depthshade=False,
-    )
-    plot_centerlines_3D(
-        geom.grid_to_cartesian_coords(whole_image_patch_mask),
-        color=patch_plot_c,
-        ax=ax1,
-        depthshade=False,
-    )
-    plot_centerlines_3D(
-        patch_center[None, ...], color=("black", 1), ax=ax1, depthshade=False, s=point_s
-    )
-    if ostia is not None:
-        # NOTE idky plotting both in one call only plots one ostium
-        for ostium in ostia:
-            plot_centerlines_3D(
-                ostium[None], color=patch_plot_c, ax=ax1, depthshade=False, s=point_s
-            )
-
-    plot_centerlines_3D(
-        geom.grid_to_cartesian_coords(extracted_patch),
-        ax=ax2,
-        color=patch_plot_c,
-    )
-    plot_centerlines_3D(
-        np.array([extracted_patch.shape]) // 2,
-        color=("black", 1),
-        ax=ax2,
-        depthshade=False,
-        s=point_s,
-    )
 
     return axes
