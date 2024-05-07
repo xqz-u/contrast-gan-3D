@@ -79,14 +79,7 @@ class TrainManager:
 
     def __post_init__(self):
         self.maybe_update_globals()
-        # reproducibility
-        if seed is not None:
-            logger.info("Using seed %d", seed)
-            utils.seed_everything(seed)
-        else:
-            # NOTE increase speed but halts reproducibility
-            logger.info("Set CUDNN in benchmark mode")
-            torch.backends.cudnn.benchmark = True
+        self.ensure_reproducible()
         # possibly restart interrupted experiment
         if self.wandb_run_id is None:
             train_folds, val_folds = train_u.cval_paths(n_cval_folds, *dataset_paths)
@@ -107,7 +100,7 @@ class TrainManager:
                     self.group,
                     self.start_fold,
                 )
-        # other setup attributes
+        # setup other attributes
         self.train_val_folds = (train_folds, val_folds)
         self.device = utils.set_GPU(self.device_idx)
         self.profiler = maybe_create_profiler(self.profiler_dir, self.device)
@@ -123,6 +116,15 @@ class TrainManager:
             logger.info("Reading overwrites from '%s'", str(self.conf_overwrites))
             overwrite_module = train_u.global_overrides(self.conf_overwrites)
             globals().update(vars(overwrite_module))
+
+    def ensure_reproducible(self):
+        if seed is not None:
+            logger.info("Using seed %d", seed)
+            utils.seed_everything(seed)
+        else:
+            # NOTE increase speed but halts reproducibility
+            logger.info("Set CUDNN in benchmark mode")
+            torch.backends.cudnn.benchmark = True
 
     def generate_run_id(self) -> str:
         if not any([self.wandb_run_id is None, self.data_only, self.has_restarted]):
@@ -166,6 +168,7 @@ class TrainManager:
                 val_iterations,
                 validate_every,
                 train_generator_every,
+                train_critic_every,
                 log_every,
                 log_images_every,
                 generator_class,

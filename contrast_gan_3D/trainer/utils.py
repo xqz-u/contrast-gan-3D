@@ -171,6 +171,7 @@ def config_from_globals(vars: dict) -> dict:
                 "train_iterations",
                 "val_iterations",
                 "train_generator_every",
+                "train_critic_every",
                 "seed",
                 "n_cval_folds",
                 "checkpoint_every",

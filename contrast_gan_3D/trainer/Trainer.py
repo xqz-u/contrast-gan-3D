@@ -22,13 +22,15 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO train with more generator updates & smaller learning rate
+# TODO recreate dataset with correct opt/subopt division
 
-# TODO evaluation metrics
+# TODO debug model losses going to NaN after a while
+
+# TODO border artifacts 3D
+
 # TODO 3D inference: gaussian smoothing in corrected patchwork
 # TODO train with better ResNet blocks // initialize from pretrained
 
-# TODO dataset recreation (get rid of HD5 // throw memmaps in there?)
 # TODO BETTER validation metrics
 # TODO upload configuration files to fully restore restarted runs - not done atm
 #      since complex dtypes are converted to strings and need to be evaluated
@@ -46,6 +48,7 @@ class Trainer:
         val_iterations: int,
         validate_every: int,
         train_generator_every: int,
+        train_critic_every: int,
         log_every: int,
         log_images_every: int,
         generator_class: partial,
@@ -74,6 +77,7 @@ class Trainer:
         self.val_tot_samples = (
             val_subopt_patches + val_batch_size[ScanType.OPT.value]
         ) * val_iterations
+        self.val_tot_samples *= val_iterations
         self.rng = rng
         self.device = device
         logger.info("Using device: %s", self.device)
@@ -83,6 +87,7 @@ class Trainer:
         self.val_iterations = val_iterations
         self.val_every = validate_every
         self.train_generator_every = train_generator_every
+        self.train_critic_every = train_critic_every
         self.log_every = log_every
         self.log_images_every = log_images_every
 
@@ -181,7 +186,9 @@ class Trainer:
         # critic/generator updates, critic and generator loss share parts of the
         # same computational graph, meaning `retain_graph` must be True on the
         # first of the two loss.backward()
-        log_dict = self.train_critic(opt, opt_hat, do_train_generator)
+        log_dict = {}
+        if iteration % self.train_critic_every == 0:
+            log_dict = self.train_critic(opt, opt_hat, do_train_generator)
         if do_train_generator:
             subopt_mask = torch.cat([low["seg"], high["seg"]])
             subopt_mask = subopt_mask.to(self.device, non_blocking=True)
