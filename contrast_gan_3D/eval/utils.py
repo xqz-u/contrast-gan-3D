@@ -23,7 +23,7 @@ def collect_voxels(
     for scan_path in scan_paths:
         scan, meta = data_u.load_patient(str(scan_path))
         offset, spacing = meta["offset"], meta["spacing"]
-        ccta, centerlines = scan[..., 0], scan[..., 1]
+        ccta, centerlines = scan[..., 0], scan[..., 1].astype(bool)
 
         ostias = geom.world_to_grid_coords(
             meta["ostia_world"], offset, spacing, scan.shape[:-1]
@@ -50,7 +50,7 @@ def collect_voxels(
 
 
 def collect_evaluation_histograms(
-    evaluation_paths: FoldType, corrector: CCTAContrastCorrector
+    evaluation_paths: FoldType, corrector: CCTAContrastCorrector | None = None
 ) -> tuple[
     dict[ScanType, dict[str, np.ndarray]], dict[ScanType, dict[str, np.ndarray]]
 ]:
@@ -68,7 +68,7 @@ def collect_evaluation_histograms(
     return voxels_by_label, corrected_voxels_by_label
 
 
-def plot_histograms(
+def plot_HU_distributions(
     subopt: np.ndarray,
     corrected_subopt: np.ndarray,
     opt: np.ndarray,

@@ -138,6 +138,12 @@ def plot_image_histogram(
     return axes
 
 
+# NOTE works with LPS orientation. image: WHD, return order: axial, sagittal, coronal
+def get_medical_views(scan: np.ndarray, xyz: np.ndarray) -> list[np.ndarray]:
+    x, y, z = xyz
+    return [scan[..., z].T, np.flip(scan[x, ...].T, 0), np.flip(scan[:, y, :].T, 0)]
+
+
 def plot_ostium_patch(
     ostium_patch: np.ndarray,
     coords: Union[Iterable[int], str] = "middle",
@@ -160,10 +166,8 @@ def plot_ostium_patch(
         axes[0, 0].get_figure().suptitle(title)
 
     kwargs = dict(zip(["vmin", "vmax", "cmap"], [vmin, vmax, "gray"]))
-    # order: axial, sagittal, coronal
-    for ax, patch in zip(
-        axes.flat, [ostium_patch[..., z], ostium_patch[:, y, :], ostium_patch[x, ...]]
-    ):
+    views = get_medical_views(ostium_patch, np.array([x, y, z]))
+    for ax, patch in zip(axes.flat, views):
         ax.imshow(patch, **kwargs)
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
@@ -171,7 +175,6 @@ def plot_ostium_patch(
     return axes
 
 
-# NOTE works with LPS orientation. image: HWD
 def plot_mid_slice(
     image: np.ndarray,
     axes: Optional[np.ndarray] = None,
@@ -183,16 +186,14 @@ def plot_mid_slice(
         _, axes = plt.subplots(1, 3, figsize=(10, 5))
 
     args = dict(zip(["cmap", "vmin", "vmax"], ["gray", vmin, vmax]))
-    middle_y, middle_x, middle_z = image.shape // np.array(2)
+    middle = image.shape // np.array(2)
 
-    axes[0].imshow(image[..., middle_z], **args)
-    axes[0].set_title("Axial")
-    axes[1].imshow(np.flip(image[:, middle_y, :].T, 0), **args)
-    axes[1].set_title("Sagittal")
-    axes[2].imshow(np.flip(image[middle_x, ...].T, 0), **args)
-    axes[2].set_title("Coronal")
+    views = get_medical_views(image, middle)
+    for ax, title, view in zip(axes.flat, ["Axial", "Sagittal", "Coronal"], views):
+        ax.imshow(view, **args)
+        ax.set_title(title)
 
-    full_title = f"{tuple(image.shape)}, middle: {(middle_x, middle_y, middle_z)}"
+    full_title = f"{tuple(image.shape)}, middle: {middle}"
     if title is not None:
         full_title = f"{title} {full_title}"
     axes[0].get_figure().suptitle(full_title)
@@ -200,7 +201,7 @@ def plot_mid_slice(
     return axes
 
 
-def plot_gmm_fitted_ostium_patch(
+def plot_GMM_fitted_ostium_patch(
     ostium_patch: np.ndarray,
     mean: np.ndarray,
     std: np.ndarray,

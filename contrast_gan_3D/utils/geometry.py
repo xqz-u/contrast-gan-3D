@@ -1,8 +1,4 @@
-from typing import List, Optional, Tuple, Union
-
-import h5py
 import numpy as np
-import pandas as pd
 import torch
 
 from contrast_gan_3D import utils
@@ -13,7 +9,7 @@ from contrast_gan_3D.utils import logging_utils
 logger = logging_utils.create_logger(name=__name__)
 
 
-def check_3D_arrays(*arrays: Tuple[Array]):
+def check_3D_arrays(*arrays: tuple[Array]):
     for el in arrays:
         assert el.shape[-1] == 3, el.shape
 
@@ -32,7 +28,7 @@ def world_to_image_coords(world_coords: Array, offset: Array, spacing: Array) ->
 
 # NOTE previous codebase
 def fast_trilinear(
-    input_array: Union[np.ndarray, h5py.Dataset],
+    input_array: np.ndarray,
     x_indices: np.ndarray,
     y_indices: np.ndarray,
     z_indices: np.ndarray,
@@ -65,7 +61,7 @@ def fast_trilinear(
 # NOTE previous codebase
 # NOTE as the name suggests: x,y,z are in **world coordinates**
 def draw_sample_3D_world_fast(
-    image: Union[np.ndarray, h5py.Dataset],
+    image: np.ndarray,
     x: np.ndarray,
     y: np.ndarray,
     z: np.ndarray,
@@ -101,38 +97,21 @@ def draw_sample_3D_world_fast(
 
 
 def extract_ostia_patch_3D(
-    image: np.ndarray,
-    meta: dict,
-    image_id: str,
-    ostia_df: pd.DataFrame,
+    scan: np.ndarray,
+    ostia_world: np.ndarray,
+    offset: np.ndarray,
+    spacing: np.ndarray,
     patch_size: np.ndarray = AORTIC_ROOT_PATCH_SIZE,
     patch_spacing: np.ndarray = AORTIC_ROOT_PATCH_SPACING,
-    coords_prefix: str = "",
-) -> Tuple[np.ndarray, np.ndarray]:
-    assert not isinstance(
-        image, h5py.Dataset
-    ), "Cannot use HD5 dataset here, convert to numpy array!"
-
-    ostia_rows = ostia_df[ostia_df["ID"] == image_id]
-    if len(ostia_rows) != 2:
-        logger.debug(
-            "Something's off with '%s' ostia, shape: %s", image_id, ostia_rows.shape
-        )
-
-    coords_indexer = [f"{coords_prefix}{c}" for c in list("xyz")]
-    ostia_world_coords = ostia_rows[coords_indexer].values
-    ostia_coords = ostia_world_coords - meta["offset"]
+) -> np.ndarray:
     ostia_patch_samples = [
-        draw_sample_3D_world_fast(
-            image, *coords, meta["spacing"], patch_size, patch_spacing
-        )
-        for coords in ostia_coords
+        draw_sample_3D_world_fast(scan, *coords, spacing, patch_size, patch_spacing)
+        for coords in ostia_world - offset
     ]
+    return np.stack(ostia_patch_samples)
 
-    return np.stack(ostia_patch_samples), ostia_world_coords
 
-
-def ensure_valid_bounds(s: int, e: int, target_size: int, size: int) -> Tuple[int, int]:
+def ensure_valid_bounds(s: int, e: int, target_size: int, size: int) -> tuple[int, int]:
     assert not (s < 0 and e > size), f"{target_size} < {size}"
     if s < 0:
         s, e = 0, target_size

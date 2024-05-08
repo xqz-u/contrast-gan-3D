@@ -44,7 +44,8 @@ def create_patient(
     write_pickle(meta, out_dir / f"{patient_name}_meta.pkl")
 
 
-def load_patient(patient_name: str) -> tuple[np.ndarray, dict]:
+def load_patient(patient_name: Path | str) -> tuple[np.ndarray, dict]:
+    patient_name = str(patient_name)
     patient = np.load(patient_name + ".npy", mmap_mode="r+")
     meta = load_pickle(patient_name + "_meta.pkl")
     return patient, meta
@@ -88,11 +89,10 @@ def label_ccta_scan(
             )
         ]
         .copy()
-        .reset_index(drop=True)
     )
     if is_cadrads:
         ret = ret.drop_duplicates(subset=["mu", "std"])
-    ret = ret[ret["std"] < std_threshold]
+    ret = ret.loc[ret["std"] < std_threshold]
     # label the CT scans based on the mean HU intensity at the coronary aortic root
     ret.loc[ret["mu"].between(300, 500), "label"] = 0
     ret.loc[ret["mu"] <= 300, "label"] = -1
