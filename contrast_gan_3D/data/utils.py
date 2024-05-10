@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -8,8 +8,9 @@ from batchgenerators.utilities.file_and_folder_operations import (
     load_pickle,
     write_pickle,
 )
+from sklearn.model_selection import StratifiedKFold, train_test_split
 
-from contrast_gan_3D.alias import Array
+from contrast_gan_3D.alias import Array, FoldType
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import io_utils, logging_utils
 
@@ -82,14 +83,11 @@ def create_ostia_dataframe(
 def label_ccta_scan(
     ostia_HU_df: pd.DataFrame, is_cadrads: bool = True, std_threshold: float = 500.0
 ) -> pd.DataFrame:
-    ret = (
-        ostia_HU_df.iloc[
-            ostia_HU_df.groupby("ID" if is_cadrads else "id").apply(
-                lambda x: x["std"].idxmin()
-            )
-        ]
-        .copy()
-    )
+    ret = ostia_HU_df.iloc[
+        ostia_HU_df.groupby("ID" if is_cadrads else "id").apply(
+            lambda x: x["std"].idxmin()
+        )
+    ].copy()
     if is_cadrads:
         ret = ret.drop_duplicates(subset=["mu", "std"])
     ret = ret.loc[ret["std"] < std_threshold]
@@ -111,3 +109,31 @@ def minmax_norm(
         value_range = (x.min(), x.max())
     low, high = value_range
     return (x - low) / max(high - low, 1e-5)
+
+
+def cross_val_splits(
+    n_folds: int,
+    *dataset_paths: Iterable[Union[Path, str]],
+    test_size: float = 0.2,
+    seed: Optional[int] = None,
+) -> Tuple[List[FoldType], List[FoldType]]:
+    X, Y = [], []
+    for df_path in dataset_paths:
+        df = pd.read_excel(df_path)
+        X += df["path"].values.tolist()
+        Y += df["label"].values.tolist()
+    X, Y = np.array(X), np.array(Y)
+
+    if n_folds == 1:
+        xtrain, xval, ytrain, yval = train_test_split(
+            X, Y, test_size=test_size, shuffle=True, stratify=Y, random_state=seed
+        )
+        train, val = [list(zip(xtrain, ytrain))], [list(zip(xval, yval))]
+    else:
+        train, val = [], []
+        cval = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        for train_idx, val_idx in cval.split(X, Y):
+            train.append(list(zip(X[train_idx], Y[train_idx])))
+            val.append(list(zip(X[val_idx], Y[val_idx])))
+
+    return train, val

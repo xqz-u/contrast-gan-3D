@@ -18,7 +18,7 @@ from contrast_gan_3D.utils import geometry as geom
 
 train_iterations = int(1e4)
 val_iterations = 10
-train_generator_every = 5  # from WGAN paper
+train_generator_every = 5  # from WGAN paper and baseline 2D implementation
 train_critic_every = 1
 seed = None  # DEFAULT_SEED
 checkpoint_every = int(1e3)
@@ -64,8 +64,6 @@ critic_optim_class = partial(Adam, lr=lr, betas=betas)
 critic_lr_scheduler_class = partial(MultiStepLR, milestones=milestones, gamma=lr_gamma)
 
 # ------------ DATA ------------
-n_cval_folds = 1
-
 train_patch_size = TRAIN_PATCH_SIZE
 val_patch_size = VAL_PATCH_SIZE
 

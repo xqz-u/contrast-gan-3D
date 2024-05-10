@@ -1,23 +1,24 @@
 import os
-from dataclasses import dataclass, field
 
 # https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from pprint import pprint
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import matplotlib
 import numpy as np
 import torch
+from batchgenerators.utilities.file_and_folder_operations import load_pickle
 from wandb.sdk.lib.runid import generate_id
 
 import wandb
 from contrast_gan_3D import utils
 from contrast_gan_3D.alias import FoldType
-from contrast_gan_3D.config import CHECKPOINTS_DIR, LOGS_DIR
+from contrast_gan_3D.config import CHECKPOINTS_DIR, LOGS_DIR, ROOT_DIR
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.model.loss import HULoss
 from contrast_gan_3D.model.utils import count_parameters
@@ -61,7 +62,8 @@ def maybe_create_profiler(
 class TrainManager:
     wandb_project: str
     wandb_entity: str
-    data_only: bool
+    train_folds: list[FoldType]
+    val_folds: list[FoldType]
     conf_overwrites: Optional[Path] = None
     wandb_run_id: Optional[str] = None
     device_idx: Optional[int] = None
@@ -72,42 +74,31 @@ class TrainManager:
     group: str = field(
         init=False, default_factory=lambda: f"cval_experiment_{make_timestamp()}"
     )
-    train_val_folds: Tuple[List[FoldType], List[FoldType]] = field(
-        init=False, repr=False, default=()
-    )
     has_restarted: bool = field(init=False, default=False)
 
     def __post_init__(self):
         self.maybe_update_globals()
         self.ensure_reproducible()
-        # possibly restart interrupted experiment
-        if self.wandb_run_id is None:
-            train_folds, val_folds = train_u.cval_paths(n_cval_folds, *dataset_paths)
-        else:
+        if self.wandb_run_id is not None:
+            # restart interrupted experiment
             assert self.wandb_entity is not None, "Missing wandb entity."
             run_path = [self.wandb_entity, self.wandb_project, self.wandb_run_id]
             run = wandb.Api().run("/".join(run_path))
-            train_folds = run.config["train_folds"]
-            val_folds = run.config["val_folds"]
-            logger.info("Using same train/val data as run '%s'", self.wandb_run_id)
-            if not self.data_only:
-                # restart a run - not just using that run's train/val data
-                self.group = run.group
-                self.start_fold = run.config["fold"]
-                logger.info(
-                    "RESUME run '%s' experiment '%s' fold %d",
-                    self.wandb_run_id,
-                    self.group,
-                    self.start_fold,
-                )
+            self.group = run.group
+            self.start_fold = run.config["fold"]
+            logger.info(
+                "RESUME run '%s' experiment '%s' fold %d",
+                self.wandb_run_id,
+                self.group,
+                self.start_fold,
+            )
         # setup other attributes
-        self.train_val_folds = (train_folds, val_folds)
         self.device = utils.set_GPU(self.device_idx)
         self.profiler = maybe_create_profiler(self.profiler_dir, self.device)
 
     def maybe_update_globals(self):
         if self.conf_overwrites is not None:
-            if self.wandb_run_id is not None and not self.data_only:
+            if self.wandb_run_id is not None:
                 # NOTE when restarting a run, check the right overwrites are being
                 # used from the stopped run's wandb Overview page, section 'Command'
                 logger.warning(
@@ -127,16 +118,14 @@ class TrainManager:
             torch.backends.cudnn.benchmark = True
 
     def generate_run_id(self) -> str:
-        if not any([self.wandb_run_id is None, self.data_only, self.has_restarted]):
+        if self.wandb_run_id is not None and not self.has_restarted:
             self.has_restarted = True
             return self.wandb_run_id
         return generate_id()  # new id for each cross validation run
 
     def __call__(self):
-        train_folds, val_folds = self.train_val_folds
-
         for fold, (train_fold, val_fold) in enumerate(
-            zip(train_folds[self.start_fold :], val_folds[self.start_fold :]),
+            zip(self.train_folds[self.start_fold :], self.val_folds[self.start_fold :]),
             start=self.start_fold,
         ):
             run_id = self.generate_run_id()
@@ -197,8 +186,6 @@ class TrainManager:
                 "generator": trainer.generator,
                 "critic": trainer.critic,
                 "fold": fold,
-                "train_folds": train_folds,
-                "val_folds": val_folds,
                 "generator_size": generator_size,
                 "critic_size": critic_size,
             }
@@ -246,17 +233,23 @@ if __name__ == "__main__":
     )
     parser.add_argument("--device", type=int, default=None, help="CUDA device index")
     parser.add_argument(
-        "--data-only",
-        default=False,
-        action="store_true",
-        help="Restart a run with a wandb-run-id or start a new run with same train/validation data from wandb-run-id.",
+        "--cross-validation-splits",
+        default=ROOT_DIR / "cross_val_splits.pkl",
+        type=Path,
+        help="Path to Pickle file defining train/test splits.",
     )
     args = parser.parse_args()
+
+    train_val_file = args.cross_validation_splits
+    assert train_val_file.is_file(), "Run notebooks/create_dataset.ipynb first."
+    logger.info("Reading train/test splits from '%s'", str(train_val_file))
+    cval = load_pickle(train_val_file)
 
     TrainManager(
         args.wandb_project,
         args.wandb_entity,
-        args.data_only,
+        cval["train"],
+        cval["test"],
         args.conf_overwrites,
         args.wandb_run_id,
         args.device,

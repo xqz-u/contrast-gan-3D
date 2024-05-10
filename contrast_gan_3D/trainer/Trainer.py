@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import torch
 from torch import Tensor, nn, profiler
+from torch.autograd import set_detect_anomaly
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from tqdm.auto import trange
@@ -30,13 +31,6 @@ logger = create_logger(name=__name__)
 # TODO train with better ResNet blocks // initialize from pretrained
 
 # TODO BETTER validation metrics
-# TODO upload configuration files to fully restore restarted runs - not done atm
-#      since complex dtypes are converted to strings and need to be evaluated
-# TODO remove globals from TrainManager so it can be ported outside train.py
-# TODO exception handling LoggerInterface
-
-# TODO parallelize cval runs: multiple processes & multiple GPUs
-# TODO AMP, DDP ?
 
 
 class Trainer:
@@ -125,6 +119,7 @@ class Trainer:
     ) -> Dict[str, Tensor]:
         self.optimizer_D.zero_grad(set_to_none=True)
 
+        set_detect_anomaly(False)
         real_logits: Tensor = self.critic(real)
         # detach() avoids computing gradients wrt generator's output
         fake_logits: Tensor = self.critic(reconstructions.detach())
@@ -141,7 +136,9 @@ class Trainer:
                 rng=self.rng,
             )
 
-        loss_critic.backward(retain_graph=retain_graph and self.weight_clip is None)
+            loss_critic.backward(retain_graph=retain_graph and self.weight_clip is None)
+        set_detect_anomaly(False)
+
         self.optimizer_D.step()
         if self.weight_clip is not None:
             for p in self.critic.parameters():
@@ -156,6 +153,7 @@ class Trainer:
     ) -> Dict[str, Tensor]:
         self.optimizer_G.zero_grad(set_to_none=True)
 
+        set_detect_anomaly(False)
         # generator goal: max E[critic(fake)] <-> min -E[critic(fake)]
         loss_G = self.gan_loss_w * -self.loss_GAN(self.critic(reconstructions))
         loss_sim = self.sim_loss_w * self.loss_similarity(reconstructions, inputs)
@@ -163,6 +161,8 @@ class Trainer:
         full_loss_G: Tensor = loss_G + loss_sim + loss_hu
 
         full_loss_G.backward()
+        set_detect_anomaly(False)
+
         self.optimizer_G.step()
         if self.lr_scheduler_G is not None:
             self.lr_scheduler_G.step()
