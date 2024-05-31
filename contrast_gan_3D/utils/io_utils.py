@@ -66,7 +66,9 @@ def load_mevis_coords(sourcefile: Union[Path, str]) -> Tuple[np.ndarray, np.ndar
 
 
 def load_sitk_image(
-    image_path: Union[Path, str], target_orientation: str = ORIENTATION
+    image_path: Union[Path, str],
+    segmentation: bool = False,
+    target_orientation: str = ORIENTATION,
 ) -> Tuple[np.ndarray, Dict[str, Union[str, np.ndarray]]]:
     image_path = Path(image_path)
     image = sitk.ReadImage(image_path)
@@ -75,7 +77,7 @@ def load_sitk_image(
     if orientation != target_orientation:
         image = sitk.DICOMOrient(image, target_orientation)
         new_orientation = get_scan_orientation(image)
-        logger.info(
+        logger.debug(
             "Changed orientation '%s': %s -> %s",
             str(image_path),
             orientation,
@@ -90,10 +92,12 @@ def load_sitk_image(
     )
 
     image = image.astype(np.int16)
-    # constrain the scan to lie in [MIN_HU, MAX_HU]
-    if (diff := image.min() - MIN_HU) >= abs(MIN_HU):
-        image -= diff
-    image = image.clip(MIN_HU, MAX_HU)
+    if not segmentation:
+        logger.debug("Scaling image...")
+        # constrain the scan to lie in [MIN_HU, MAX_HU]
+        if (diff := image.min() - MIN_HU) >= abs(MIN_HU):
+            image -= diff
+        image = image.clip(MIN_HU, MAX_HU)
 
     min_, max_ = image.min(), image.max()
     logger.debug("New image dtype %s range (%d, %d)", image.dtype, min_, max_)

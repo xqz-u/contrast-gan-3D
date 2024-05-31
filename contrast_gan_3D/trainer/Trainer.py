@@ -23,7 +23,7 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO debug model losses going to NaN after a while
+# TODO debug model losses going to NaN after a while NOTE might be done
 
 # TODO border artifacts 3D
 

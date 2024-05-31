@@ -189,9 +189,9 @@ def plot_mid_slice(
     middle = image.shape // np.array(2)
 
     views = get_medical_views(image, middle)
-    for ax, title, view in zip(axes.flat, ["Axial", "Sagittal", "Coronal"], views):
+    for ax, ax_title, view in zip(axes.flat, ["Axial", "Sagittal", "Coronal"], views):
         ax.imshow(view, **args)
-        ax.set_title(title)
+        ax.set_title(ax_title)
 
     full_title = f"{tuple(image.shape)}, middle: {middle}"
     if title is not None:
