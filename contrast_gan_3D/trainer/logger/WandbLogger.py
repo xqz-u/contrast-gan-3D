@@ -123,6 +123,10 @@ class WandbLogger:
         attn = minmax_norm(attenuations[indexer], (low, high))
         attn = self.cmap(attn).squeeze().transpose(3, 0, 1, 2)
         # add colorbar
+        if hasattr(self.scaler, "factor"):
+            # map generator output [-1,1] to practical HU limits
+            factor = self.scaler.factor
+            low, high = low * factor, high * factor
         fig, ax = plt.subplots(figsize=self.figsize)
         norm = colors.Normalize(low, high)
         mappable = cm.ScalarMappable(norm=norm, cmap=self.cmap)
