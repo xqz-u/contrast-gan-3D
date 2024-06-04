@@ -118,46 +118,41 @@ def global_overrides(config_path: Path):
 
 
 def config_from_globals(vars: dict) -> dict:
-    return (
-        {
-            k: vars[k]
-            for k in [
-                "lr",
-                "betas",
-                "milestones",
-                "lr_gamma",
-                "weight_clip",
-                "max_HU_delta",
-                "desired_HU_bounds",
-                "HU_norm_range",
-                "generator_args",
-                "critic_args",
-                "train_patch_size",
-                "train_batch_size",
-                "val_patch_size",
-                "val_batch_size",
-                "dataset_paths",
-                "train_transform_args",
-                "train_iterations",
-                "val_iterations",
-                "train_generator_every",
-                "train_critic_every",
-                "seed",
-                "checkpoint_every",
-                "validate_every",
-                "log_every",
-                "log_images_every",
-                "num_workers",
-            ]
-        }
-        | {
-            k: object_name(o if not isinstance((o := vars[k]), partial) else o.func)
-            for k in [
-                "generator_optim_class",
-                "generator_lr_scheduler_class",
-                "critic_optim_class",
-                "critic_lr_scheduler_class",
-            ]
-        }
-        | {k: str(vars[k]) for k in ["train_transform", "scaler", "logger_interface"]}
-    )
+    return {
+        k: o.func if isinstance((o := vars[k]), partial) else o
+        for k in [
+            "lr",
+            "betas",
+            "milestones",
+            "lr_gamma",
+            "weight_clip",
+            "max_HU_delta",
+            "desired_HU_bounds",
+            "HU_norm_range",
+            "generator_args",
+            "critic_args",
+            "train_patch_size",
+            "train_batch_size",
+            "val_patch_size",
+            "val_batch_size",
+            "dataset_paths",
+            "train_transform_args",
+            "train_iterations",
+            "val_iterations",
+            "train_generator_every",
+            "train_critic_every",
+            "seed",
+            "checkpoint_every",
+            "validate_every",
+            "log_every",
+            "log_images_every",
+            "num_workers",
+            "train_transform",
+            "scaler",
+            "logger_interface",
+            "generator_optim_class",
+            "generator_lr_scheduler_class",
+            "critic_optim_class",
+            "critic_lr_scheduler_class",
+        ]
+    }
