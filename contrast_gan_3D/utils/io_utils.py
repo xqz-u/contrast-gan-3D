@@ -108,3 +108,21 @@ def load_sitk_image(
         "min": min_,
         "max": max_,
     }
+
+
+# NOTE assumes `data` to be ordered in sitk convention: zyx
+def to_sitk(
+    data: np.ndarray,
+    offset: np.ndarray,
+    spacing: np.ndarray,
+    savepath: Union[str, Path],
+):
+    im = sitk.GetImageFromArray(data)
+    im.SetOrigin(offset)
+    im.SetSpacing(spacing)
+    savepath = Path(savepath)
+    if not str(savepath).endswith(".mhd"):
+        savepath = savepath.with_suffix(".mhd")
+    logger.info("Saving scan to '%s'...", savepath)
+    sitk.WriteImage(im, savepath, useCompression=True)
+    logger.info("DONE")

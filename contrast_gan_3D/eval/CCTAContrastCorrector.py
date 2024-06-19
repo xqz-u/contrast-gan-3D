@@ -108,8 +108,5 @@ class CCTAContrastCorrector:
     ):
         if isinstance(ccta, Tensor):
             ccta = ccta.numpy()
-        # HWD -> DHW (xyz->zyx, numpy to sitk convention)
-        savepath = str(savepath)
-        logger.info("Saving scan to '%s'...", savepath)
-        io_utils.to_itksnap_volume(ccta.transpose(2, 0, 1), offset, spacing, savepath)
-        logger.info("DONE saved '%s'", savepath)
+        # WHD -> DHW (xyz->zyx, numpy to sitk convention)
+        io_utils.to_sitk(ccta.transpose(2, 1, 0), offset, spacing, str(savepath))
