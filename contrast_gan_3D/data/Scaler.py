@@ -2,6 +2,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from contrast_gan_3D.alias import Array
+from contrast_gan_3D.utils.logging_utils import create_logger
+
+logger = create_logger(name=__name__)
 
 
 class Scaler(ABC):
@@ -22,6 +25,7 @@ class ZeroCenterScaler(Scaler):
 
     def __post_init__(self):
         self.shift = (self.high - abs(self.low)) // 2
+        logger.info("Subtract %d to 0-center scans", self.shift)
 
     def __call__(self, x: Array) -> Array:
         return x - self.shift
