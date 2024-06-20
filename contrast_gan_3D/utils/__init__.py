@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from contrast_gan_3D.alias import Shape3D
+from contrast_gan_3D.alias import Array, Shape3D
 
 
 def object_name(el: object) -> str:
@@ -46,3 +46,12 @@ def parse_patch_size(target_shape: Shape3D, input_shape: Shape3D) -> np.ndarray:
         if dim == -1:
             target_shape[i] = input_shape[i]
     return target_shape
+
+
+def swap_last_dim(t: Array) -> Array:
+    *rest_dim, last_dim = np.arange(len(t.shape))
+    if isinstance(t, np.ndarray):
+        t = t.transpose(last_dim, *rest_dim)
+    if isinstance(t, torch.Tensor):
+        t = t.permute((last_dim, *rest_dim))
+    return t

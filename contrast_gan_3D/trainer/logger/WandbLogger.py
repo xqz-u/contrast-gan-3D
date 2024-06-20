@@ -17,6 +17,7 @@ from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.data.utils import minmax_norm
 from contrast_gan_3D.utils import geometry as geom
+from contrast_gan_3D.utils import swap_last_dim
 from contrast_gan_3D.utils import visualization as viz
 
 
@@ -26,10 +27,11 @@ class WandbLogger:
     run: Optional[Run] = None
     rng: np.random.Generator = field(default_factory=np.random.default_rng)
     cmap: colors.Colormap = field(default_factory=lambda: cm.RdBu)
-    figsize: Tuple[int, int] = (10, 10)
+    figsize: Tuple[int, int] = (15, 15)
     use_caption: bool = field(init=False, default=True)
-    grid_args: dict = field(
-        default_factory=lambda: {"normalize": True, "value_range": (VMIN, VMAX)}
+    norm_constants: dict = field(
+        default_factory=lambda: {"normalize": True, "value_range": (VMIN, VMAX)},
+        init=False,
     )
 
     def __post_init__(self):
@@ -100,13 +102,26 @@ class WandbLogger:
             )
             caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
 
-        slices = self.scaler.unscale(scans[indexer])
-        fig = viz.plot_axial_slices(slices, fig, figsize=self.figsize, **self.grid_args)
+        cbar_low = self.scaler.unscale(scans[sample_idx].min())
+        cbar_high = self.scaler.unscale(scans[sample_idx].max())
+        fig = viz.plot_axial_slices(
+            self.scaler.unscale(scans[indexer]),
+            fig=fig,
+            figsize=self.figsize,
+            cbar_range=(cbar_low, cbar_high),
+            **self.norm_constants,
+        )
         buffer.append(((f"{workspace}/sample", it, fig), {"caption": caption_cp}))
 
         if reconstructions is not None:
-            recon = self.scaler.unscale(reconstructions[indexer])
-            fig = viz.plot_axial_slices(recon, figsize=self.figsize, **self.grid_args)
+            cbar_low = self.scaler.unscale(reconstructions[sample_idx].min())
+            cbar_high = self.scaler.unscale(reconstructions[sample_idx].max())
+            fig = viz.plot_axial_slices(
+                self.scaler.unscale(reconstructions[indexer]),
+                figsize=self.figsize,
+                cbar_range=(cbar_low, cbar_high),
+                **self.norm_constants,
+            )
             buffer.append(
                 ((f"{workspace}/reconstruction", it, fig), {"caption": caption})
             )
@@ -116,23 +131,22 @@ class WandbLogger:
             buffer.append(((f"{workspace}/attenuation", it, fig), {"caption": caption}))
         return buffer
 
-    def create_attenuation_grid(self, attenuations: Tensor, indexer: list) -> Figure:
-        # normalize [-1, 1]->[0, 1] for colormap (min and max from entire sample)
+    def create_attenuation_grid(
+        self, attenuations: Tensor, indexer: list, scale_by_factor: bool = True
+    ) -> Figure:
+        # normalize to [0, 1] for colormap (min and max from entire scan)
         attn_sample = attenuations[indexer[0]]
-        low, high = attn_sample.min().item(), attn_sample.max().item()
+        low, high = attn_sample.min(), attn_sample.max()
         attn = minmax_norm(attenuations[indexer], (low, high))
-        attn = self.cmap(attn).squeeze().transpose(3, 0, 1, 2)
-        # add colorbar
-        if hasattr(self.scaler, "factor"):
-            # map generator output [-1,1] to practical HU limits
+        # `cmap` adds new channel dimension, make it the first one
+        attn = swap_last_dim(self.cmap(attn).squeeze())
+        if hasattr(self.scaler, "factor") and scale_by_factor:
+            # map generator output [-1,1] to used HU limits
             factor = self.scaler.factor
             low, high = low * factor, high * factor
-        fig, ax = plt.subplots(figsize=self.figsize)
-        norm = colors.Normalize(low, high)
-        mappable = cm.ScalarMappable(norm=norm, cmap=self.cmap)
-        cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
-        cbar.set_ticks(np.linspace(low, high, 5))
-        return viz.plot_axial_slices(attn, fig)
+        return viz.plot_axial_slices(
+            attn, figsize=self.figsize, cmap=self.cmap, cbar_range=(low, high)
+        )
 
     def log_wandb_image(
         self, tag: str, it: int, fig: Figure, caption: Optional[str] = None
@@ -141,6 +155,7 @@ class WandbLogger:
         if self.run is not None:
             self.run.log({tag: image, "step": it})
         else:
+            print(tag, caption)
             image.image.show()
         plt.close(fig)
 
@@ -151,9 +166,8 @@ class WandbLogger:
 
 @dataclass
 class WandbLogger2D(WandbLogger):
-    figsize: Tuple[int, int] = (12, 3)
     use_caption: bool = field(init=False, default=False)
 
     def pre_call_hook(self, *tensors: List[Optional[Tensor]]) -> List[Optional[Tensor]]:
-        # BCWH -> BCWHD (final B is dummy dimension, D is simulated by old batch size)
+        # BCWH -> 1CWHB (D is dummy dimension simulated by B)
         return [t if t is None else t[..., None].swapaxes(0, -1) for t in tensors]

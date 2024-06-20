@@ -2,6 +2,7 @@ from typing import Iterable, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from matplotlib import cm, colors
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -58,23 +59,33 @@ def plot_centerlines_3D(
     return ax
 
 
-# NOTE assumes `slices` of shape CWHD (D is interpreted as a batch size)
+# NOTE assumes `slices` of shape CWH(B)
 def plot_axial_slices(
     slices: Union[torch.Tensor, np.ndarray],
     fig: Optional[Figure] = None,
     tight: bool = True,
     figsize: Tuple[int, int] = (10, 10),
+    cmap: str = "gray",
+    cbar_range: Tuple[int, int] | None = None,
     **grid_args,
 ) -> Figure:
     if isinstance(slices, np.ndarray):
         slices = torch.from_numpy(slices)
-    # CWHD -> DCHW -> C,HxD,WxD
+    if len(slices.shape) < 4:
+        slices = slices[..., None]  # virtual batch dimension
+    # CWHB -> BCHW -> C,HxB,WxB
     grid = make_grid(slices.permute(3, 0, 2, 1).to(float), **grid_args)
     if fig is None:
         fig, ax = plt.subplots(figsize=figsize)
     else:
-        ax, *_ = fig.get_axes()
-    ax.imshow(grid.permute(1, 2, 0))
+        ax, *_ = fig.axes
+    ax.imshow(grid.permute(1, 2, 0), cmap=cmap)
+    # manually add colorbar with explicit range
+    if cbar_range is not None:
+        norm = colors.Normalize(*cbar_range)
+        mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+        cbar = fig.colorbar(mappable, ax=ax, shrink=0.8)
+        cbar.set_ticks(np.linspace(*cbar_range, 10, dtype=int))
     ax.set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
     if tight:
         fig.tight_layout()
