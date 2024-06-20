@@ -23,18 +23,15 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO VMIN VMAX on image logging?
-# TODO plot image histograms on wandb?
-# TODO check why some images are reported with too high/low bounds
-
-# TODO get rid of D-real and D-fake if they don't represent probabilities, check paper
-
-# TODO border artifacts 3D
+# TODO train 2D model longer
+# TODO train 3D model with gradient penalty
+# TODO train 3D model longer
 
 # TODO 3D inference: gaussian smoothing in corrected patchwork
-# TODO train with better ResNet blocks // initialize from pretrained
-
 # TODO BETTER validation metrics
+
+# TODO border artifacts 3D
+# TODO train with better ResNet blocks // initialize from pretrained
 
 
 class Trainer:
@@ -129,7 +126,9 @@ class Trainer:
             fake_logits: Tensor = self.critic(reconstructions.detach())
 
             # critic goal: max E[critic(real)] - E[critic(fake)] <-> min E[critic(fake)] - E[critic(real)]
-            loss_critic: Tensor = self.gan_loss_w * self.loss_GAN(fake_logits, real_logits)
+            loss_critic: Tensor = self.gan_loss_w * self.loss_GAN(
+                fake_logits, real_logits
+            )
             if self.weight_clip is None:
                 loss_critic += wgan_gradient_penalty(
                     real,
@@ -150,7 +149,7 @@ class Trainer:
         if self.lr_scheduler_D is not None:
             self.lr_scheduler_D.step()
 
-        return {"D": loss_critic, "D-real": real_logits, "D-fake": fake_logits}
+        return {"D": loss_critic}
 
     def train_generator(
         self, inputs: Tensor, reconstructions: Tensor, centerlines_masks: Tensor

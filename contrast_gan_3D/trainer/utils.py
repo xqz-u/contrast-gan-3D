@@ -119,7 +119,7 @@ def global_overrides(config_path: Path):
 
 def config_from_globals(vars: dict) -> dict:
     return {
-        k: o.func if isinstance((o := vars[k]), partial) else o
+        k: o.func if isinstance((o := vars.get(k)), partial) else o
         for k in [
             "lr",
             "betas",
@@ -154,5 +154,6 @@ def config_from_globals(vars: dict) -> dict:
             "generator_lr_scheduler_class",
             "critic_optim_class",
             "critic_lr_scheduler_class",
+            "gp_weight",
         ]
     }
