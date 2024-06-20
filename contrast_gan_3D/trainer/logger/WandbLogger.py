@@ -27,7 +27,7 @@ class WandbLogger:
     run: Optional[Run] = None
     rng: np.random.Generator = field(default_factory=np.random.default_rng)
     cmap: colors.Colormap = field(default_factory=lambda: cm.RdBu)
-    figsize: Tuple[int, int] = (15, 15)
+    figsize: Tuple[int, int] = (20, 20)
     use_caption: bool = field(init=False, default=True)
     norm_constants: dict = field(
         default_factory=lambda: {"normalize": True, "value_range": (VMIN, VMAX)},
@@ -82,7 +82,7 @@ class WandbLogger:
             scans, masks, reconstructions, attenuations
         )
 
-        indexer = WandbLogger.create_indexer(scans.shape, sample_size, self.rng)
+        indexer = self.create_indexer(scans.shape, sample_size, self.rng)
         sample_idx = indexer[0]
         fig, caption = None, names[sample_idx]
         workspace, caption_cp = f"{stage}/images/{scan_type}", caption
