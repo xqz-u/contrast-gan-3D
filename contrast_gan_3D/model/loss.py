@@ -36,7 +36,6 @@ class ZNCCLoss(nn.Module):
 
     def forward(self, source: Tensor, target: Tensor) -> Tensor:
         # assert source.shape == target.shape, "Input shapes are different"
-
         cc = ((source - source.mean()) * (target - target.mean())).mean()
         std = self.stablestd(source) * self.stablestd(target)
         return -(cc / (std + 1e-8))
