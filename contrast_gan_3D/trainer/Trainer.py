@@ -23,7 +23,11 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO debug model losses going to NaN after a while NOTE might be done
+# TODO VMIN VMAX on image logging?
+# TODO plot image histograms on wandb?
+# TODO check why some images are reported with too high/low bounds
+
+# TODO get rid of D-real and D-fake if they don't represent probabilities, check paper
 
 # TODO border artifacts 3D
 
@@ -119,25 +123,25 @@ class Trainer:
     ) -> Dict[str, Tensor]:
         self.optimizer_D.zero_grad(set_to_none=True)
 
-        set_detect_anomaly(False)
-        real_logits: Tensor = self.critic(real)
-        # detach() avoids computing gradients wrt generator's output
-        fake_logits: Tensor = self.critic(reconstructions.detach())
+        with set_detect_anomaly(False):
+            real_logits: Tensor = self.critic(real)
+            # detach() avoids computing gradients wrt generator's output
+            fake_logits: Tensor = self.critic(reconstructions.detach())
 
-        # critic goal: max E[critic(real)] - E[critic(fake)] <-> min E[critic(fake)] - E[critic(real)]
-        loss_critic: Tensor = self.gan_loss_w * self.loss_GAN(fake_logits, real_logits)
-        if self.weight_clip is None:
-            loss_critic += wgan_gradient_penalty(
-                real,
-                reconstructions,
-                self.critic,
-                device=self.device,
-                lambda_=self.gp_w,
-                rng=self.rng,
-            )
-
-            loss_critic.backward(retain_graph=retain_graph and self.weight_clip is None)
-        set_detect_anomaly(False)
+            # critic goal: max E[critic(real)] - E[critic(fake)] <-> min E[critic(fake)] - E[critic(real)]
+            loss_critic: Tensor = self.gan_loss_w * self.loss_GAN(fake_logits, real_logits)
+            if self.weight_clip is None:
+                loss_critic += wgan_gradient_penalty(
+                    real,
+                    reconstructions,
+                    self.critic,
+                    device=self.device,
+                    lambda_=self.gp_w,
+                    rng=self.rng,
+                )
+            # with gradient penalty, retain the computation graph on iterations
+            # where both critic and generator are trained, otherwise call .backward() normally
+            loss_critic.backward(retain_graph=self.weight_clip is None and retain_graph)
 
         self.optimizer_D.step()
         if self.weight_clip is not None:
@@ -153,15 +157,13 @@ class Trainer:
     ) -> Dict[str, Tensor]:
         self.optimizer_G.zero_grad(set_to_none=True)
 
-        set_detect_anomaly(False)
-        # generator goal: max E[critic(fake)] <-> min -E[critic(fake)]
-        loss_G = self.gan_loss_w * -self.loss_GAN(self.critic(reconstructions))
-        loss_sim = self.sim_loss_w * self.loss_similarity(reconstructions, inputs)
-        loss_hu = self.hu_loss_w * self.loss_HU(reconstructions, centerlines_masks)
-        full_loss_G: Tensor = loss_G + loss_sim + loss_hu
-
-        full_loss_G.backward()
-        set_detect_anomaly(False)
+        with set_detect_anomaly(False):
+            # generator goal: max E[critic(fake)] <-> min -E[critic(fake)]
+            loss_G = self.gan_loss_w * -self.loss_GAN(self.critic(reconstructions))
+            loss_sim = self.sim_loss_w * self.loss_similarity(reconstructions, inputs)
+            loss_hu = self.hu_loss_w * self.loss_HU(reconstructions, centerlines_masks)
+            full_loss_G: Tensor = loss_G + loss_sim + loss_hu
+            full_loss_G.backward()
 
         self.optimizer_G.step()
         if self.lr_scheduler_G is not None:
@@ -200,7 +202,7 @@ class Trainer:
 
         if iteration % self.log_images_every == 0:
             if self.train_log_sample_size is None:
-                self.train_log_sample_size = 32
+                self.train_log_sample_size = 64
                 if len(opt_hat.shape) != 5:  # 2D case
                     bs = (len(x["data"]) for x in patches)
                     self.train_log_sample_size = min(*bs, self.train_log_sample_size)
@@ -289,7 +291,7 @@ class Trainer:
                     if len(loggable) == (len(ScanType) - 1):
                         patches, reconstructions, attenuations = list(zip(*loggable))
                         if self.val_log_sample_size is None:
-                            self.val_log_sample_size = 32
+                            self.val_log_sample_size = 64
                             if len(reconstructions[0].shape) != 5:  # 2D case
                                 bs = (len(x["data"]) for x in patches)
                                 self.val_log_sample_size = min(
