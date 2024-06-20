@@ -73,8 +73,8 @@ class CCTADataLoader(DataLoader):
     ) -> tuple[np.ndarray, bool]:
         return data_and_seg, True  # WHD
 
-    def generate_one(self, idx: int) -> tuple[np.ndarray, np.ndarray, str]:
-        ccta_and_seg, meta = data_u.load_patient(self._data[idx])  # 4D: WHD[HU,label]
+    def generate_one(self, patient_path: str) -> tuple[np.ndarray, np.ndarray, str]:
+        ccta_and_seg, meta = data_u.load_patient(patient_path)  # 4D: WHD[HU,label]
         ccta_and_seg, do_crop = self.get_samplable(ccta_and_seg, meta)
         ccta_and_seg = ccta_and_seg[None, None]  # `crop` wants BCWH(D)
         patch, mask = ccta_and_seg[..., 0], ccta_and_seg[..., 1]
@@ -97,11 +97,12 @@ class CCTADataLoader(DataLoader):
     def generate_train_batch(self) -> dict:
         data = np.zeros(self.batch_shape, dtype=np.float32)  # BCWH(D)
         masks = np.zeros(self.batch_shape, dtype=np.float32)
-        names = []
+        names, paths = [], []
 
         for i, idx in enumerate(self.get_indices()):
-            patch, mask, name = self.generate_one(idx)
+            patient_path = self._data[idx]
+            patch, mask, name = self.generate_one(patient_path)
             data[i], masks[i] = patch, mask
-            names.append(name)
+            names.append(name), paths.append(patient_path)
 
-        return {"data": data, "seg": masks, "name": names}
+        return {"data": data, "seg": masks, "name": names, "path": paths}
