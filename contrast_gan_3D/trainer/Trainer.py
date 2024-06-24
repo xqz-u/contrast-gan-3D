@@ -23,15 +23,21 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO train 2D model longer
-# TODO train 3D model with gradient penalty
-# TODO train 3D model longer
+# TODO LayerNorm for WGAN-GP
 
-# TODO 3D inference: gaussian smoothing in corrected patchwork
-# TODO BETTER validation metrics
+# TODO decrease lr
+# TODO use RMSPROP instead of Adam, especially when no GP is used
 
-# TODO border artifacts 3D
-# TODO train with better ResNet blocks // initialize from pretrained
+# TODO try increasing model complexity
+
+# TODO WGAN-div
+
+# TODO evaluation 3D: gaussian smoothing in corrected patchwork
+
+# --------------------------
+
+# TODO deal with border artifacts
+# TODO train with proper ResNet blocks // initialize from pretrained
 
 
 class Trainer:
@@ -50,7 +56,6 @@ class Trainer:
         critic_optim_class: partial,
         hu_loss_instance: nn.Module,
         logger_interface: Union[SingleThreadedLogger, MultiThreadedLogger],
-        val_batch_size: Dict[int, int],
         device: torch.device,
         checkpoint_dir: Optional[Union[str, Path]] = None,
         weight_clip: Optional[float] = None,
@@ -63,14 +68,6 @@ class Trainer:
         checkpoint_every: Optional[int] = 1000,
         rng: Optional[np.random.Generator] = None,
     ):
-        val_subopt_patches = (
-            val_batch_size[ScanType.HIGH.value] + val_batch_size[ScanType.LOW.value]
-        )
-        self.val_subopt_samples = val_subopt_patches * val_iterations
-        self.val_tot_samples = (
-            val_subopt_patches + val_batch_size[ScanType.OPT.value]
-        ) * val_iterations
-        self.val_tot_samples *= val_iterations
         self.rng = rng
         self.device = device
         logger.info("Using device: %s", self.device)
@@ -200,11 +197,7 @@ class Trainer:
             )
 
         if iteration % self.log_images_every == 0:
-            if self.train_log_sample_size is None:
-                self.train_log_sample_size = 64
-                if len(opt_hat.shape) != 5:  # 2D case
-                    bs = (len(x["data"]) for x in patches)
-                    self.train_log_sample_size = min(*bs, self.train_log_sample_size)
+            self.maybe_set_log_images_sample_size("train", patches[0]["data"].shape)
             cut = len(low["data"])
             self.logger_interface(
                 patches,
@@ -256,8 +249,8 @@ class Trainer:
         self.critic.eval()
         self.generator.eval()
 
-        z = torch.zeros(6, dtype=torch.float32, device=self.device)
-        loss_sim, loss_G, loss_real_C, loss_fake_C, C_real, C_fake = z.chunk(6)
+        z = torch.zeros(4, dtype=torch.float32, device=self.device)
+        loss_sim, loss_G, loss_real_C, loss_fake_C = z.chunk(4)
         loggable = []
 
         with torch.no_grad():
@@ -271,31 +264,26 @@ class Trainer:
 
                 if scan_type_enum == ScanType.OPT:
                     real_logits = self.critic(sample)
+                    loss_real = self.loss_GAN(real_logits)
 
-                    loss_real_C -= self.loss_GAN(real_logits)
-                    C_real += real_logits.sum()
+                    loss_real_C -= loss_real
                 else:
                     attenuation = self.generator(sample)
                     sample_hat = sample - attenuation
                     fake_logits = self.critic(sample_hat)
-                    batch_loss_G = self.loss_GAN(fake_logits)
+                    loss_fake = self.loss_GAN(fake_logits)
 
-                    C_fake += fake_logits.sum()
-                    loss_fake_C += batch_loss_G
-                    loss_G -= batch_loss_G
+                    loss_fake_C += loss_fake
+                    loss_G -= loss_fake
                     loss_sim += self.loss_similarity(sample_hat, sample)
 
                 if i == 0 and scan_type_enum != ScanType.OPT:
                     loggable.append([batch, sample_hat, attenuation])
                     if len(loggable) == (len(ScanType) - 1):
                         patches, reconstructions, attenuations = list(zip(*loggable))
-                        if self.val_log_sample_size is None:
-                            self.val_log_sample_size = 64
-                            if len(reconstructions[0].shape) != 5:  # 2D case
-                                bs = (len(x["data"]) for x in patches)
-                                self.val_log_sample_size = min(
-                                    *bs, self.val_log_sample_size
-                                )
+                        self.maybe_set_log_images_sample_size(
+                            "val", patches[0]["data"].shape
+                        )
                         self.logger_interface(
                             patches,
                             list(reconstructions),
@@ -314,10 +302,9 @@ class Trainer:
         self.generator.train()
 
         val_loss = {
-            "D": (loss_real_C + loss_fake_C) / self.val_tot_samples,
-            "G": loss_G / self.val_subopt_samples,
-            "sim": loss_sim / self.val_subopt_samples,
-            "D-real-fake-delta": (C_real - C_fake) / self.val_tot_samples,
+            "D": (loss_real_C + loss_fake_C) / self.val_iterations,
+            "G": loss_G / (self.val_iterations * 2),
+            "sim": loss_sim / (self.val_iterations * 2),  # number of subopt batches
         }
         self.logger_interface.logger.log_loss(val_loss, train_iteration, "validation")
 
@@ -361,3 +348,13 @@ class Trainer:
                     augmenter.restart()
                 elif hasattr(augmenter, "_finish"):
                     augmenter._finish()
+
+    def maybe_set_log_images_sample_size(self, mode: str, batch_shape: tuple[int]):
+        attr_name = f"{mode}_log_sample_size"
+        attr_val = getattr(self, attr_name)
+        if attr_val is None:
+            is_3D = len(batch_shape) == 5
+            bs = batch_shape[(-1 if is_3D else 0)]
+            v = min(bs, 64)
+            setattr(self, attr_name, v)
+            logger.info("Set %s to %d", attr_name, v)

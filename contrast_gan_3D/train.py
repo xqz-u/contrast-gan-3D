@@ -166,7 +166,6 @@ class TrainManager:
                 critic_optim_class,
                 HULoss(*scaled_HU_bounds, (train_subopt_bs, 1, *train_patch_size)),
                 logger_interface,
-                val_batch_size,
                 checkpoint_dir=CHECKPOINTS_DIR / run_id,
                 weight_clip=weight_clip,
                 generator_lr_scheduler_class=critic_lr_scheduler_class,
@@ -206,6 +205,8 @@ class TrainManager:
                 trainer.fit(train_loaders, val_loaders, profiler=self.profiler)
                 if self.profiler is not None:  # profile only one run
                     break
+
+            break  # just do one fold
 
 
 if __name__ == "__main__":
