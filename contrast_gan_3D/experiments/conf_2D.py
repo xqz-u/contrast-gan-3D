@@ -12,8 +12,6 @@ train_batch_size = {
 }
 val_batch_size = train_batch_size.copy()
 
-num_workers = (10, 10)  # (train, validation)
-
 generator_args.update(is_2D=True, n_resnet_blocks=6)
 generator_class = partial(ResnetGenerator, **generator_args)
 
