@@ -17,7 +17,7 @@ from contrast_gan_3D.trainer.logger.WandbLogger import WandbLogger
 from contrast_gan_3D.utils import geometry as geom
 
 train_iterations = int(1e4)
-val_iterations = 10
+val_iterations = 2
 train_generator_every = 5  # from WGAN paper and baseline 2D implementation
 train_critic_every = 1
 seed = None  # DEFAULT_SEED
@@ -68,13 +68,17 @@ train_patch_size = TRAIN_PATCH_SIZE
 val_patch_size = VAL_PATCH_SIZE
 
 train_batch_size = {
-    v.value: b for v, b in [(ScanType.OPT, 10), (ScanType.LOW, 4), (ScanType.HIGH, 4)]
+    v.value: b
+    for v, b in [(ScanType.OPT, 10), (ScanType.LOW, 5), (ScanType.HIGH, 5)]
+    # v.value: b for v, b in [(ScanType.OPT, 6), (ScanType.LOW, 3), (ScanType.HIGH, 3)]
 }
-val_batch_size = {v.value: 3 for v in ScanType}  # 9
+val_batch_size = {v.value: 3 for v in ScanType}
 
-num_workers = (12, 6)  # (train, validation)
+num_workers = (4, 2)  # (train, validation)
 
 dataset_paths = ["/home/marco/data/ostia_final.xlsx"]
+
+# **NOTE** rotation modifies the HU range of the original scan up to +-200 HU
 train_transform_args = {
     "patch_size": train_patch_size,
     "random_crop": False,
@@ -94,7 +98,7 @@ train_transform_args = {
     },
     "p_rot_per_sample": 0.2,
 }
-train_transform = Compose(
+train_transform = lambda: Compose(
     [
         SpatialTransform_2(**train_transform_args),
         NumpyToTensor(keys=["data"]),

@@ -88,8 +88,8 @@ class WandbLogger:
         workspace, caption_cp = f"{stage}/images/{scan_type}", caption
         buffer = []
 
-        # show centerlines by scattering manually during training
-        if stage == "train" and masks is not None:
+        # show centerlines by scattering manually
+        if masks is not None:
             ctls = masks[indexer].permute(3, 0, 2, 1).to(torch.float16)  # CWHD -> DCHW
             ctls_grid = make_grid(ctls)
             cart = geom.grid_to_cartesian_coords(ctls_grid)  # DHW (zyx)

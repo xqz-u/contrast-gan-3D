@@ -49,7 +49,7 @@ def create_dataloaders(
     rng: np.random.Generator,
     scaler: Type[Scaler] = lambda x: x,
     num_workers: Tuple[int, int] = (1, 1),
-    train_transform: Optional[Callable[[dict], dict]] = None,
+    train_transform: Optional[callable] = None,
     seed: int = DEFAULT_SEED,
 ) -> Tuple[Dict[int, BGenAugmenter], Dict[int, BGenAugmenter]]:
     pin_memory = torch.cuda.is_available()
@@ -67,7 +67,7 @@ def create_dataloaders(
                 num_threads_in_multithreaded=num_workers[0],
                 seed_for_shuffle=seed,
             ),
-            train_transform,
+            train_transform(),
             num_workers[0],
             pin_memory=pin_memory,
         )
