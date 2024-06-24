@@ -10,7 +10,6 @@ betas = (0, 0.9)
 lr = 1e-4
 gp_weight = 10
 
-# NOTE can't use LayerNorm as suggested in GP-WGAN paper when train and
-# validation patch sizes differ
+# NOTE if using LayerNorm, remember to skip validation
 critic_args.update(norm_layer=nn.Identity)
 critic_class = partial(PatchGANDiscriminator, **critic_args)

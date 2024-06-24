@@ -9,10 +9,6 @@ import torch
 from contrast_gan_3D.alias import Array, Shape3D
 
 
-def object_name(el: object) -> str:
-    return el.__class__.__name__
-
-
 def seed_everything(seed):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)

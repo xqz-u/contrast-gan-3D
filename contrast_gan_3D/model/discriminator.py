@@ -3,6 +3,7 @@ from collections import OrderedDict
 from torch import Tensor, nn
 
 from contrast_gan_3D.model.blocks import ConvBlock
+from contrast_gan_3D.model.utils import convolution_output_shape
 
 
 class PatchGANDiscriminator(nn.Module):
@@ -15,10 +16,11 @@ class PatchGANDiscriminator(nn.Module):
         kernel_size: int = 4,
         padding: int = 1,
         norm_layer: nn.Module | None = None,
+        **kwargs,
     ):
         super().__init__()
 
-        stride, negative_slope = 2, 0.2
+        stride = 2
         model = [
             (
                 "first",
@@ -31,16 +33,25 @@ class PatchGANDiscriminator(nn.Module):
                     padding=padding,
                     norm_layer=nn.Identity,
                     activation_fn=nn.LeakyReLU,
-                    negative_slope=negative_slope,
+                    **kwargs,
                 ),
             )
         ]
         # gradually increase the number of filters, and decrease spatial extent:
         # the critic looks at increasingly finer feature maps
         middle = []
+        kwargs = kwargs.copy()
+        if ps := kwargs.get("patch_size"):
+            kwargs["patch_size"] = convolution_output_shape(
+                ps, init_channels_out, kernel_size, padding, stride
+            )
         for n in range(discriminator_depth):
             in_ = min(2**n, 8) * init_channels_out
             out_ = min(2 ** (n + 1), 8) * init_channels_out
+            if ps := kwargs.get("patch_size"):
+                kwargs["patch_size"] = convolution_output_shape(
+                    ps, out_, kernel_size, padding, stride
+                )
             middle.append(
                 ConvBlock(
                     is_2D,
@@ -51,7 +62,7 @@ class PatchGANDiscriminator(nn.Module):
                     padding=padding,
                     norm_layer=norm_layer,
                     activation_fn=nn.LeakyReLU,
-                    negative_slope=negative_slope,
+                    **kwargs,
                 )
             )
         model.append(("middle", nn.Sequential(*middle)))

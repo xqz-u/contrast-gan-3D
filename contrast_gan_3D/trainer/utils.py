@@ -4,7 +4,7 @@ import sys
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import torch
@@ -18,7 +18,6 @@ from contrast_gan_3D.alias import BGenAugmenter, FoldType, Shape3D
 from contrast_gan_3D.constants import DEFAULT_SEED
 from contrast_gan_3D.data.CCTADataLoader import CCTADataLoader
 from contrast_gan_3D.data.Scaler import Scaler
-from contrast_gan_3D.utils import object_name
 
 
 def find_latest_checkpoint(ckpt_dir: Union[Path, str]) -> Optional[Path]:

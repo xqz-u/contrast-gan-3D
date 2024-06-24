@@ -15,7 +15,7 @@ class ConvBlock(nn.Module):
         stride: int = 1,
         activation_fn: nn.Module = nn.ReLU,
         norm_layer: nn.Module | None = None,
-        **activation_kwargs
+        **kwargs,
     ):
         super().__init__()
 
@@ -34,9 +34,17 @@ class ConvBlock(nn.Module):
             bias=norm_layer == nn.Identity,
             padding_mode=padding_mode,
             padding=padding,
-            **args
+            **args,
         )
-        self.normalization = norm_layer(channels_out)
+
+        norm_shape = channels_out
+        if norm_layer == nn.LayerNorm and (ps := kwargs.get("patch_size")):
+            norm_shape = ps
+        self.normalization = norm_layer(norm_shape)
+
+        activation_kwargs = {}
+        if (ns := kwargs.get("negative_slope")) is not None:
+            activation_kwargs["negative_slope"] = ns
         self.activation_fn = activation_fn(inplace=True, **activation_kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
