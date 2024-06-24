@@ -28,8 +28,9 @@ def wgan_gradient_penalty(
     interpolation = eps * real_batch + (1 - eps) * fake_batch
     critic_logits = critic(interpolation)
     # https://discuss.pytorch.org/t/when-do-i-use-create-graph-in-autograd-grad/32853
-    # retain_graph must also be True otherwise the computational graph of ``
-    # freed before they can later be used in the full discriminator loss
+    # retain_graph must also be True otherwise the computational graphs of the
+    # critic's gradient wrt real_batch and fake_batch are freed before they can
+    # later be used in the full discriminator loss
     gradients, *_ = grad(
         outputs=critic_logits,
         inputs=interpolation,
