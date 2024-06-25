@@ -142,6 +142,7 @@ class TrainManager:
                 num_workers=num_workers,
                 train_transform=train_transform,
                 seed=seed,
+                augmenter_class=augmenter_class,
             )
 
             scaled_HU_bounds = scaler(np.array(desired_HU_bounds))

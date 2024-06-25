@@ -23,21 +23,12 @@ from contrast_gan_3D.utils.logging_utils import create_logger
 
 logger = create_logger(name=__name__)
 
-# TODO LayerNorm for WGAN-GP
-
-# TODO decrease lr
-# TODO use RMSPROP instead of Adam, especially when no GP is used
-
-# TODO try increasing model complexity
-
+# TODO smaller lr, longer training
+# TODO increase model complexity
 # TODO WGAN-div
 
 # TODO evaluation 3D: gaussian smoothing in corrected patchwork
-
-# --------------------------
-
-# TODO deal with border artifacts
-# TODO train with proper ResNet blocks // initialize from pretrained
+# TODO evaluation 3D: marker recovery hit (post-correction centerlines extraction) ?
 
 
 class Trainer:
@@ -217,15 +208,21 @@ class Trainer:
     ):
         self.generator.train()
         self.critic.train()
+
         # start batchgenerator's async augmenters
-        self._manage_augmenters([train_loaders, val_loaders], "start")
+        augmenters_dict = {"train": train_loaders, "val": val_loaders}
+        self._manage_augmenters(augmenters_dict, "start")
 
         for iteration in trange(self.iteration, self.train_iterations, desc="Train"):
             # NOTE order is determined by ScanType
             patches = [next(train_loaders[scan_type.value]) for scan_type in ScanType]
             self.train_step(patches, iteration)
 
-            if iteration != 0 and iteration % self.val_every == 0:
+            if (
+                self.val_every is not None
+                and iteration != 0
+                and iteration % self.val_every == 0
+            ):
                 self.validate(val_loaders, iteration)
 
             if (
@@ -242,7 +239,7 @@ class Trainer:
             profiler.stop()
         if self.checkpoint_every is not None:
             self.save_checkpoint(self.train_iterations)
-        self._manage_augmenters([train_loaders, val_loaders], "end")
+        self._manage_augmenters(augmenters_dict, "end")
         self.logger_interface.end_hook()
 
     def validate(self, val_loaders: Dict[int, BGenAugmenter], train_iteration: int):
@@ -339,10 +336,14 @@ class Trainer:
                     setattr(self, k, v)
         logger.info("Starting from iteration %d", self.iteration)
 
-    @staticmethod
-    def _manage_augmenters(augmenters: List[Dict[int, BGenAugmenter]], event: str):
+    def _manage_augmenters(
+        self, augmenters: Dict[str, Dict[int, BGenAugmenter]], event: str
+    ):
         assert event in ["start", "end"], f"Unknown event {event!r}"
-        for aug_dict in augmenters:
+        for aug_mode, aug_dict in augmenters.items():
+            if aug_mode == "val" and self.val_every is None:
+                logger.warning("No validation, do not start validation augmenters")
+                continue
             for augmenter in aug_dict.values():
                 if event == "start" and hasattr(augmenter, "restart"):
                     augmenter.restart()

@@ -11,6 +11,9 @@ import torch
 from batchgenerators.dataloading.nondet_multi_threaded_augmenter import (
     NonDetMultiThreadedAugmenter,
 )
+from batchgenerators.dataloading.single_threaded_augmenter import (
+    SingleThreadedAugmenter,
+)
 from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
 
@@ -50,12 +53,16 @@ def create_dataloaders(
     num_workers: Tuple[int, int] = (1, 1),
     train_transform: Optional[callable] = None,
     seed: int = DEFAULT_SEED,
+    augmenter_class: BGenAugmenter = NonDetMultiThreadedAugmenter,
 ) -> Tuple[Dict[int, BGenAugmenter], Dict[int, BGenAugmenter]]:
     pin_memory = torch.cuda.is_available()
 
     train_by_lab = divide_scans_in_fold(train_fold)
+    args = {}
+    if augmenter_class != SingleThreadedAugmenter:
+        args = {"pin_memory": pin_memory, "num_processes": num_workers[0]}
     train_loaders = {
-        label: NonDetMultiThreadedAugmenter(
+        label: augmenter_class(
             CCTADataLoader(
                 paths,
                 train_patch_size,
@@ -67,15 +74,16 @@ def create_dataloaders(
                 seed_for_shuffle=seed,
             ),
             train_transform(),
-            num_workers[0],
-            pin_memory=pin_memory,
+            **args,
         )
         for label, paths in train_by_lab.items()
     }
     val_by_lab = divide_scans_in_fold(val_fold)
 
+    if "num_processes" in args:
+        args["num_processes"] = num_workers[1]
     val_loaders = {
-        label: NonDetMultiThreadedAugmenter(
+        label: augmenter_class(
             CCTADataLoader(
                 paths,
                 val_patch_size,
@@ -92,8 +100,7 @@ def create_dataloaders(
                     NumpyToTensor(keys=["seg"], cast_to="bool"),
                 ]
             ),
-            num_workers[1],
-            pin_memory=pin_memory,
+            **args,
         )
         for label, paths in val_by_lab.items()
     }
@@ -154,5 +161,6 @@ def config_from_globals(vars: dict) -> dict:
             "critic_optim_class",
             "critic_lr_scheduler_class",
             "gp_weight",
+            "augmenter_class",
         ]
     }
