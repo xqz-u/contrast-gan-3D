@@ -48,6 +48,7 @@ class Trainer:
         hu_loss_instance: nn.Module,
         logger_interface: Union[SingleThreadedLogger, MultiThreadedLogger],
         device: torch.device,
+        debug: bool = False,
         checkpoint_dir: Optional[Union[str, Path]] = None,
         weight_clip: Optional[float] = None,
         generator_lr_scheduler_class: Optional[partial] = None,
@@ -61,6 +62,7 @@ class Trainer:
     ):
         self.rng = rng
         self.device = device
+        self.debug = debug
         logger.info("Using device: %s", self.device)
         self.train_log_sample_size, self.val_log_sample_size = None, None
 
@@ -108,7 +110,7 @@ class Trainer:
     ) -> Dict[str, Tensor]:
         self.optimizer_D.zero_grad(set_to_none=True)
 
-        with set_detect_anomaly(False):
+        with set_detect_anomaly(self.debug):
             real_logits: Tensor = self.critic(real)
             # detach() avoids computing gradients wrt generator's output
             fake_logits: Tensor = self.critic(reconstructions.detach())
@@ -144,12 +146,14 @@ class Trainer:
     ) -> Dict[str, Tensor]:
         self.optimizer_G.zero_grad(set_to_none=True)
 
-        with set_detect_anomaly(False):
+        with set_detect_anomaly(self.debug):
             # generator goal: max E[critic(fake)] <-> min -E[critic(fake)]
             loss_G = self.gan_loss_w * -self.loss_GAN(self.critic(reconstructions))
             loss_sim = self.sim_loss_w * self.loss_similarity(reconstructions, inputs)
             loss_hu = self.hu_loss_w * self.loss_HU(reconstructions, centerlines_masks)
-            full_loss_G: Tensor = loss_G + loss_sim + loss_hu
+            full_loss_G: Tensor = loss_G + loss_sim
+            if not torch.isnan(loss_hu):
+                full_loss_G += loss_hu
             full_loss_G.backward()
 
         self.optimizer_G.step()

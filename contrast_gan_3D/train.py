@@ -64,6 +64,7 @@ class TrainManager:
     wandb_entity: str
     train_folds: list[FoldType]
     val_folds: list[FoldType]
+    debug: bool
     conf_overwrites: Optional[Path] = None
     wandb_run_id: Optional[str] = None
     device_idx: Optional[int] = None
@@ -167,11 +168,12 @@ class TrainManager:
                 critic_optim_class,
                 HULoss(*scaled_HU_bounds, (train_subopt_bs, 1, *train_patch_size)),
                 logger_interface,
+                self.device,
+                self.debug,
                 checkpoint_dir=CHECKPOINTS_DIR / run_id,
                 weight_clip=weight_clip,
                 generator_lr_scheduler_class=critic_lr_scheduler_class,
                 critic_lr_scheduler_class=critic_lr_scheduler_class,
-                device=self.device,
                 checkpoint_every=checkpoint_every,
                 rng=rng,
             )
@@ -240,6 +242,12 @@ if __name__ == "__main__":
         type=Path,
         help="Path to Pickle file defining train/test splits.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Activate torch anomaly detection mode",
+    )
     args = parser.parse_args()
 
     train_val_file = args.cross_validation_splits
@@ -252,6 +260,7 @@ if __name__ == "__main__":
         args.wandb_entity,
         cval["train"],
         cval["test"],
+        args.debug,
         args.conf_overwrites,
         args.wandb_run_id,
         args.device,
