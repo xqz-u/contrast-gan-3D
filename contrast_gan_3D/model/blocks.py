@@ -37,10 +37,12 @@ class ConvBlock(nn.Module):
             **args,
         )
 
-        norm_shape = channels_out
+        norm_shape, norm_args = channels_out, {}
         if norm_layer == nn.LayerNorm and (ps := kwargs.get("patch_size")):
             norm_shape = ps
-        self.normalization = norm_layer(norm_shape)
+            if (affine := kwargs.get("elementwise_affine")) is not None:
+                norm_args["elementwise_affine"] = affine
+        self.normalization = norm_layer(norm_shape, **norm_args)
 
         activation_kwargs = {}
         if (ns := kwargs.get("negative_slope")) is not None:
