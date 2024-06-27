@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Iterable, Optional, Tuple, Union
 
 import numpy as np
@@ -9,6 +10,7 @@ from matplotlib.figure import Figure
 from scipy.stats import norm
 from torchvision.utils import make_grid
 
+from contrast_gan_3D.alias import ScanType
 from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import logging_utils
@@ -242,3 +244,95 @@ def plot_GMM_fitted_ostium_patch(
         ax.plot(x, yy, lw=3, c=f"C{i}")
 
     return axes
+
+
+def plot_HU_distributions(
+    subopt: np.ndarray,
+    corrected_subopt: np.ndarray,
+    opt: np.ndarray,
+    ax: Axes | None = None,
+    nbins: int = 80,
+    alpha: float = 0.5,
+    title: str | None = None,
+) -> Axes:
+    if ax is None:
+        _, ax = plt.subplots()
+    ax.hist(
+        subopt,
+        bins=nbins,
+        alpha=alpha,
+        density=True,
+        label="Suboptimal",
+    )
+    ax.hist(
+        corrected_subopt,
+        bins=nbins,
+        alpha=alpha,
+        density=True,
+        label="Corrected Suboptimal",
+    )
+
+    offset = 0.01
+    bins, edges = np.histogram(opt, nbins, density=True)
+    edges = np.hstack([edges.min() - offset, edges, edges.max() + offset])
+    bins = np.hstack([0, bins, 0])
+
+    X = np.dstack([edges[:-1], edges[1:]]).ravel()
+    Y = np.dstack([bins, bins]).ravel()
+    ax.plot(X, Y, "k--", label="Optimal")
+
+    if title is not None:
+        ax.set_title(title)
+
+    return ax
+
+
+# NOTE maybe save as pdf for better quality
+def create_eval_plot(
+    og_voxels: dict[ScanType, dict[str, np.ndarray]],
+    corrected_voxels: dict[ScanType, dict[str, np.ndarray]],
+    plot_savepath: str | Path | None,
+    show: bool,
+):
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+
+    # for ax in axes.flat:
+    #     ax.set_xlim(-200, 800)
+    #     ax.set_ylim(0, 0.0075)
+    #     ax.set_yticks([])
+
+    for i, st in enumerate([ScanType.LOW, ScanType.HIGH]):
+        for j, (tag, nbins) in enumerate(zip(og_voxels[st].keys(), [100, 4, 100])):
+            plot_HU_distributions(
+                og_voxels[st][tag],
+                corrected_voxels[st][tag],
+                og_voxels[ScanType.OPT][tag],
+                ax=axes[i, j],
+                title=tag.capitalize(),
+                nbins=nbins,
+            )
+    axes[0, 0].set_ylabel(r"$\leq$ 300 HU")
+    axes[1, 0].set_ylabel(r"$\geq$ 500 HU")
+
+    fig.suptitle("HU Distribution", fontsize=16)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        # loc="upper right",
+        # bbox_to_anchor=(1, 1),
+        # ncol=1,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.93),
+        ncol=3,
+        fancybox=True,
+        shadow=True,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    if plot_savepath is not None:
+        plot_savepath = Path(plot_savepath).with_suffix(".png")
+        plt.savefig(plot_savepath)
+        print(f"Saved figure to {str(plot_savepath)!r}")
+    if show:
+        plt.show()
+    plt.close(fig)

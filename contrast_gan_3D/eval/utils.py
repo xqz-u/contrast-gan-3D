@@ -1,16 +1,23 @@
 from pathlib import Path
+from pprint import pprint
+from typing import Callable
 
 import numpy as np
 import torch
-from matplotlib import pyplot as plt
-from matplotlib.axes import Axes
+from batchgenerators.utilities.file_and_folder_operations import (
+    load_pickle,
+    save_pickle,
+)
+from torch import nn
 
-from contrast_gan_3D.alias import FoldType, ScanType
+from contrast_gan_3D.alias import ArrayShape, FoldType, ScanType
 from contrast_gan_3D.data import utils as data_u
+from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.eval.CCTAContrastCorrector import CCTAContrastCorrector
 from contrast_gan_3D.trainer.utils import divide_scans_in_fold
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import io_utils
+from contrast_gan_3D.utils import visualization as viz
 
 
 def collect_voxels(
@@ -71,10 +78,13 @@ def collect_evaluation_histograms(
     dict[ScanType, dict[str, np.ndarray]], dict[ScanType, dict[str, np.ndarray]]
 ]:
     scans_by_label = divide_scans_in_fold(evaluation_paths)
+    print("Scans distribution by label:")
+    pprint({ScanType(k): len(v) for k, v in scans_by_label.items()})
+
     voxels_by_label, corrected_voxels_by_label = {}, {}
     for st in ScanType:
         eval_paths, myocardium_paths = list(zip(*scans_by_label[st.value]))
-        print(st, len(eval_paths))
+        print(st)
         voxels, corrected_voxels = collect_voxels(
             eval_paths, myocardium_paths, None if st == ScanType.OPT else corrector
         )
@@ -84,42 +94,65 @@ def collect_evaluation_histograms(
     return voxels_by_label, corrected_voxels_by_label
 
 
-def plot_HU_distributions(
-    subopt: np.ndarray,
-    corrected_subopt: np.ndarray,
-    opt: np.ndarray,
-    ax: Axes | None = None,
-    nbins: int = 80,
-    alpha: float = 0.5,
-    title: str | None = None,
-) -> Axes:
-    if ax is None:
-        _, ax = plt.subplots()
-    ax.hist(
-        subopt,
-        bins=nbins,
-        alpha=alpha,
-        density=True,
-        label="Suboptimal",
-    )
-    ax.hist(
-        corrected_subopt,
-        bins=nbins,
-        alpha=alpha,
-        density=True,
-        label="Corrected Suboptimal",
-    )
+def read_myocardium_seg_path(preproc_ccta_path: str) -> Path:
+    myocardium_seg_path = preproc_ccta_path.replace("preproc", "segmentation") + ".mhd"
+    myocardium_seg_path = Path(myocardium_seg_path)
+    if myocardium_seg_path.is_symlink():
+        myocardium_seg_path = myocardium_seg_path.readlink()
+    assert myocardium_seg_path.is_file()
+    return myocardium_seg_path
 
-    offset = 0.01
-    bins, edges = np.histogram(opt, nbins, density=True)
-    edges = np.hstack([edges.min() - offset, edges, edges.max() + offset])
-    bins = np.hstack([0, bins, 0])
 
-    X = np.dstack([edges[:-1], edges[1:]]).ravel()
-    Y = np.dstack([bins, bins]).ravel()
-    ax.plot(X, Y, "k--", label="Optimal")
+# TODO export corrected scans to itk format?
+def evaluate_one_model(
+    model_path: str | Path,
+    ccta_eval_paths: list[tuple[str | Path, int]],
+    inference_patch_size: ArrayShape,
+    generator_class: Callable[[], nn.Module],
+    scaler: Scaler,
+    voxels_savepath: str | Path,
+    plot_savepath: str | Path | None,
+    device: torch.device,
+    show: bool = True,
+) -> tuple[dict[ScanType, dict[str, np.ndarray]], ...]:
+    voxels_savepath = Path(voxels_savepath).with_suffix(".pkl")
+    if voxels_savepath.is_file():
+        eval_voxels = load_pickle(voxels_savepath)
+        og_voxels, corrected_voxels = eval_voxels["raw"], eval_voxels["corrected"]
+        print(f"Loaded evaluation voxels from {str(voxels_savepath)!r}")
 
-    if title is not None:
-        ax.set_title(title)
+        print("Scans distribution by label:")
+        pprint(
+            {
+                ScanType(k): len(v)
+                for k, v in divide_scans_in_fold(ccta_eval_paths).items()
+            }
+        )
+        for st, voxels in og_voxels.items():
+            print(st)
+            for k, v in voxels.items():
+                print(f"\tTotal voxels {k!r}: {len(v)}")
 
-    return ax
+    else:
+        corrector = CCTAContrastCorrector(
+            generator_class,
+            scaler,
+            device,
+            inference_patch_size=inference_patch_size,
+            checkpoint_path=model_path,
+        )
+
+        scan_and_myoc_paths = [
+            ([scan_path, read_myocardium_seg_path(scan_path)], label)
+            for scan_path, label in ccta_eval_paths
+        ]
+
+        og_voxels, corrected_voxels = collect_evaluation_histograms(
+            scan_and_myoc_paths, corrector
+        )
+        save_pickle({"raw": og_voxels, "corrected": corrected_voxels}, voxels_savepath)
+        print(f"Saved evaluation voxels to {str(voxels_savepath)!r}")
+
+    viz.create_eval_plot(og_voxels, corrected_voxels, plot_savepath, show)
+
+    return og_voxels, corrected_voxels
