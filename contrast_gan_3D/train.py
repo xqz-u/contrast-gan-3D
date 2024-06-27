@@ -26,6 +26,8 @@ from contrast_gan_3D.trainer import utils as train_u
 from contrast_gan_3D.trainer.Trainer import Trainer
 from contrast_gan_3D.utils.logging_utils import create_logger
 
+wandb.require("core")
+
 matplotlib.use("agg")  # avoid MatplotLib warning about figures in threads
 
 make_timestamp = lambda: time.strftime("%m_%d_%Y_%H_%M_%S")
