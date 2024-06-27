@@ -18,7 +18,7 @@ from wandb.sdk.lib.runid import generate_id
 import wandb
 from contrast_gan_3D import utils
 from contrast_gan_3D.alias import FoldType
-from contrast_gan_3D.config import CHECKPOINTS_DIR, LOGS_DIR, ROOT_DIR
+from contrast_gan_3D.config import CHECKPOINTS_DIR, DEFAULT_CVAL_SPLITS_PATH, LOGS_DIR
 from contrast_gan_3D.experiments.basic_conf import *
 from contrast_gan_3D.model.loss import HULoss
 from contrast_gan_3D.model.utils import count_parameters
@@ -240,7 +240,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=int, default=None, help="CUDA device index")
     parser.add_argument(
         "--cross-validation-splits",
-        default=ROOT_DIR / "cross_val_splits.pkl",
+        default=DEFAULT_CVAL_SPLITS_PATH,
         type=Path,
         help="Path to Pickle file defining train/test splits.",
     )
