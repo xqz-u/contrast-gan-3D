@@ -151,9 +151,7 @@ class Trainer:
             loss_G = self.gan_loss_w * -self.loss_GAN(self.critic(reconstructions))
             loss_sim = self.sim_loss_w * self.loss_similarity(reconstructions, inputs)
             loss_hu = self.hu_loss_w * self.loss_HU(reconstructions, centerlines_masks)
-            full_loss_G: Tensor = loss_G + loss_sim
-            if not torch.isnan(loss_hu):
-                full_loss_G += loss_hu
+            full_loss_G: Tensor = loss_G + loss_sim + loss_hu
             full_loss_G.backward()
 
         self.optimizer_G.step()

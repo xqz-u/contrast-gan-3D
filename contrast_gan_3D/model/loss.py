@@ -59,13 +59,16 @@ class HULoss(nn.Module):
         self.max_HU = torch.full(
             patch_size, max_HU_constraint, dtype=torch.float32, device=device
         )
+        self.epsilon = torch.tensor(1e-8, device=device)
 
     def forward(self, batch: Tensor, mask: torch.BoolTensor) -> Tensor:
         lb, ub = torch.minimum(batch, self.min_HU), torch.maximum(batch, self.max_HU)
         loss_below = F.mse_loss(lb, self.min_HU, reduction="none")
         loss_above = F.mse_loss(ub, self.max_HU, reduction="none")
         loss = (loss_below + loss_above) * mask
-        return loss.sum() / mask.sum()  # MSE over unmasked voxels
+        # avoid NaN due to division by 0 when patches don't contain any centerline
+        safe_denominator = mask.sum() + self.epsilon
+        return loss.sum() / safe_denominator  # MSE over unmasked voxels
 
 
 class WassersteinLoss(nn.Module):
