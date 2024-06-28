@@ -13,6 +13,7 @@ from tqdm.auto import tqdm
 from contrast_gan_3D.alias import Array, ArrayShape
 from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.eval.CCTAEvalDataset import CCTAEvalDataset2D, CCTAEvalDataset3D
+from contrast_gan_3D.experiments.basic_conf import scaler
 from contrast_gan_3D.model.utils import compute_convolution_filters_shape
 from contrast_gan_3D.utils import io_utils
 from contrast_gan_3D.utils.logging_utils import create_logger
@@ -110,3 +111,22 @@ class CCTAContrastCorrector:
             ccta = ccta.numpy()
         # WHD -> DHW (xyz->zyx, numpy to sitk convention)
         io_utils.to_sitk(ccta.transpose(2, 1, 0), offset, spacing, str(savepath))
+
+    @classmethod
+    def from_checkpoint(
+        cls: "CCTAContrastCorrector",
+        inference_patch_size: ArrayShape,
+        device: torch.device,
+        checkpoint_path: Optional[Union[str, Path]] = None,
+    ):
+        if len(inference_patch_size) < 3:
+            from contrast_gan_3D.experiments.conf_2D import generator_class
+        else:
+            from contrast_gan_3D.experiments.basic_conf import generator_class
+        return cls(
+            generator_class,
+            scaler,
+            device,
+            inference_patch_size=inference_patch_size,
+            checkpoint_path=checkpoint_path,
+        )

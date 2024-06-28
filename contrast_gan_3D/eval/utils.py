@@ -146,9 +146,11 @@ def evaluate_one_model(
             ([scan_path, read_myocardium_seg_path(scan_path)], label)
             for scan_path, label in ccta_eval_paths
         ]
-
+        corrector = CCTAContrastCorrector.from_checkpoint(
+            inference_patch_size, device, checkpoint_path=model_path
+        )
         og_voxels, corrected_voxels = collect_evaluation_histograms(
-            scan_and_myoc_paths, corrector
+            scan_and_myoc_paths, corrector=corrector, itk_export_dir=itk_export_dir
         )
         save_pickle({"raw": og_voxels, "corrected": corrected_voxels}, voxels_savepath)
         print(f"Saved evaluation voxels to {str(voxels_savepath)!r}")
