@@ -148,7 +148,12 @@ def world_to_grid_coords(
     # NOTE many centerlines overlap once mapped to image coordinates
     centerlines_img_coords = np.unique(centerlines_img_coords, axis=0)
     centerlines_grid = np.zeros(grid_shape, dtype=np.uint8)
-    centerlines_grid[*[centerlines_img_coords[:, i] for i in range(3)]] = 1
+    # clip the coordinates within array bounds
+    clipped_coords = [
+        np.clip(centerlines_img_coords[:, i], 0, centerlines_grid.shape[i] - 1)
+        for i in range(3)
+    ]
+    centerlines_grid[*clipped_coords] = 1
     return centerlines_grid
 
 
