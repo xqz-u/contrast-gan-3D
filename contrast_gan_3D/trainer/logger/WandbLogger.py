@@ -3,12 +3,10 @@ from pprint import pprint
 from typing import Dict, List, Optional, Tuple, Type
 
 import numpy as np
-import torch
 from matplotlib import cm, colors
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from torch import Tensor
-from torchvision.utils import make_grid
 from wandb.sdk.wandb_run import Run
 
 import wandb
@@ -16,7 +14,6 @@ from contrast_gan_3D.alias import ArrayShape
 from contrast_gan_3D.constants import VMAX, VMIN
 from contrast_gan_3D.data.Scaler import Scaler
 from contrast_gan_3D.data.utils import minmax_norm
-from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import swap_last_dim
 from contrast_gan_3D.utils import visualization as viz
 
@@ -85,33 +82,19 @@ class WandbLogger:
         indexer = self.create_indexer(scans.shape, sample_size, self.rng)
         sample_idx = indexer[0]
         fig, caption = None, names[sample_idx]
-        workspace, caption_cp = f"{stage}/images/{scan_type}", caption
-        buffer = []
-
-        # show centerlines by scattering manually
-        if masks is not None:
-            ctls = masks[indexer].permute(3, 0, 2, 1).to(torch.float16)  # CWHD -> DCHW
-            ctls_grid = make_grid(ctls)
-            cart = geom.grid_to_cartesian_coords(ctls_grid)  # DHW (zyx)
-            fig, ax = plt.subplots(figsize=self.figsize)
-            ax.scatter(
-                cart[:, 2],
-                cart[:, 1],
-                c="red",
-                s=plt.rcParams["lines.markersize"] * 0.8,
-            )
-            caption_cp = f"{caption} {np.prod(cart.shape)}/{np.prod(masks[sample_idx].shape)} centerlines"
+        workspace, buffer = f"{stage}/images/{scan_type}", []
 
         cbar_low = self.scaler.unscale(scans[sample_idx].min())
         cbar_high = self.scaler.unscale(scans[sample_idx].max())
-        fig = viz.plot_axial_slices(
+        fig = viz.plot_axial_slices_plus_centerlines(
             self.scaler.unscale(scans[indexer]),
+            ctls=masks[indexer] if masks is not None else None,
             fig=fig,
             figsize=self.figsize,
             cbar_range=(cbar_low, cbar_high),
             **self.norm_constants,
         )
-        buffer.append(((f"{workspace}/sample", it, fig), {"caption": caption_cp}))
+        buffer.append(((f"{workspace}/sample", it, fig), {"caption": caption}))
 
         if reconstructions is not None:
             cbar_low = self.scaler.unscale(reconstructions[sample_idx].min())

@@ -94,31 +94,35 @@ def plot_axial_slices(
     return fig
 
 
-def plot_axial_slices_and_centerlines(
+def plot_axial_slices_plus_centerlines(
     slices: np.ndarray | torch.Tensor,
-    ctls: np.ndarray | torch.Tensor,
+    ctls: np.ndarray | torch.Tensor | None = None,
     fig: Figure | None = None,
-    figsisze: tuple[int, int] = (10, 10),
-    **grid_args,
+    figsize: tuple[int, int] = (10, 10),
+    **args,
 ) -> Figure:
-    assert len(slices.shape) >= 3 and len(ctls.shape) >= 3
+    assert len(slices.shape) >= 3
     if len(slices.shape) < 4:
-        slices = slices[None]
-    if len(ctls.shape) < 4:
-        ctls = ctls[None]
-    if not isinstance(ctls, torch.Tensor):
-        ctls = torch.from_numpy(ctls)
+        slices = slices[None]  # add channel dim
 
-    fig = plot_axial_slices(slices, fig=fig, figsize=figsisze, **grid_args)
+    fig = plot_axial_slices(slices, fig=fig, figsize=figsize, **args)
 
-    ctls = ctls.permute(3, 0, 2, 1).to(float)  # CWHD -> DCHW
-    ctls_cart = geom.grid_to_cartesian_coords(make_grid(ctls))  # DHW (zyx)
-    fig.get_axes()[0].scatter(
-        ctls_cart[:, 2],
-        ctls_cart[:, 1],
-        c="red",
-        s=plt.rcParams["lines.markersize"] * 0.8,
-    )
+    if ctls is not None:
+        assert len(ctls.shape) >= 3
+        if len(ctls.shape) < 4:
+            ctls = ctls[None]  # add channel dim
+        if not isinstance(ctls, torch.Tensor):
+            ctls = torch.from_numpy(ctls)
+
+        # show centerlines by scattering manually
+        ctls = ctls.permute(3, 0, 2, 1).to(float)  # CWHD -> DCHW
+        ctls_cart = geom.grid_to_cartesian_coords(make_grid(ctls))  # DHW (zyx)
+        fig.axes[0].scatter(
+            ctls_cart[:, 2],
+            ctls_cart[:, 1],
+            c="red",
+            s=plt.rcParams["lines.markersize"] * 0.8,
+        )
 
     return fig
 
@@ -257,23 +261,14 @@ def plot_HU_distributions(
 ) -> Axes:
     if ax is None:
         _, ax = plt.subplots()
-    ax.hist(
-        subopt,
-        bins=nbins,
-        alpha=alpha,
-        density=True,
-        label="Suboptimal",
-    )
-    ax.hist(
-        corrected_subopt,
-        bins=nbins,
-        alpha=alpha,
-        density=True,
-        label="Corrected Suboptimal",
-    )
+    args = {"bins": nbins, "alpha": alpha, "density": True}
+    # args = {"bins": nbins, "alpha": alpha, "density": False}
+    ax.hist(subopt, label="Suboptimal", **args)
+    ax.hist(corrected_subopt, label="Corrected Suboptimal", **args)
 
     offset = 0.01
     bins, edges = np.histogram(opt, nbins, density=True)
+    # bins, edges = np.histogram(opt, nbins, density=False)
     edges = np.hstack([edges.min() - offset, edges, edges.max() + offset])
     bins = np.hstack([0, bins, 0])
 
@@ -296,10 +291,10 @@ def create_eval_plot(
 ):
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
 
-    # for ax in axes.flat:
-    #     ax.set_xlim(-200, 800)
-    #     ax.set_ylim(0, 0.0075)
-    #     ax.set_yticks([])
+    for ax in axes.flat:
+        ax.set_xlim(-200, 800)
+        ax.set_ylim(0, 0.0075)
+        ax.set_yticks([])
 
     for i, st in enumerate([ScanType.LOW, ScanType.HIGH]):
         for j, (tag, nbins) in enumerate(zip(og_voxels[st].keys(), [100, 4, 100])):
