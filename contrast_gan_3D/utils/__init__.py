@@ -1,3 +1,4 @@
+import multiprocessing as mp
 import os
 import random
 from time import strftime
@@ -19,11 +20,24 @@ def seed_everything(seed):
 
 
 def set_GPU(device_idx: int) -> torch.device:
+    # https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     device_str = "cpu"
     if device_idx is not None and torch.cuda.is_available():
         torch.cuda.set_device(device_idx)
         device_str = f"cuda:{torch.cuda.current_device()}"
     return torch.device(device_str)
+
+
+# author: ChatGPT
+def set_multiprocessing_start_method(method: str):
+    try:
+        mp.set_start_method(method)
+    except RuntimeError as e:
+        if "context has already been set" in str(e):
+            print(f"Start method {method!r} has already been set.")
+        else:
+            raise
 
 
 def now_str() -> str:

@@ -1,3 +1,4 @@
+import multiprocessing as mp
 from pathlib import Path
 from pprint import pprint
 
@@ -13,24 +14,38 @@ from contrast_gan_3D.data import utils as data_u
 from contrast_gan_3D.eval.CCTAContrastCorrector import CCTAContrastCorrector
 from contrast_gan_3D.trainer.utils import divide_scans_in_fold
 from contrast_gan_3D.utils import geometry as geom
-from contrast_gan_3D.utils import io_utils
+from contrast_gan_3D.utils import io_utils, set_multiprocessing_start_method
 from contrast_gan_3D.utils import visualization as viz
 
 
-def correct_patients(
+def correct_patient(
     corrector: CCTAContrastCorrector,
-    patient_paths: list[str | Path],
     savedir: str | Path,
+    patient_path: str | Path,
     batch_size: int = 16,
 ):
-    savedir = Path(savedir)
-    savedir.mkdir(exist_ok=True, parents=True)
-    for p in patient_paths:
-        scan, meta = data_u.load_patient(str(p))
-        offset, spacing = meta["offset"], meta["spacing"]
-        corrected_ccta = corrector(scan[..., 0], batch_size=batch_size, desc=str(p))
-        savepath = savedir / io_utils.stem(str(p))
-        corrector.save_scan(corrected_ccta, offset, spacing, savepath)
+    scan, meta = data_u.load_patient(str(patient_path))
+    offset, spacing = meta["offset"], meta["spacing"]
+    corrected_ccta = corrector(
+        scan[..., 0], batch_size=batch_size, desc=str(patient_path)
+    )
+    savepath = Path(savedir) / io_utils.stem(str(patient_path))
+    corrector.save_scan(corrected_ccta, offset, spacing, savepath)
+
+
+def parallel_correct_patients(
+    corrector: CCTAContrastCorrector,
+    savedir: str | Path,
+    patient_paths: list[str | Path],
+    batch_size: int = 16,
+    processes: int = 4,
+):
+    set_multiprocessing_start_method("spawn")
+    with mp.Pool(processes) as pool:
+        pool.starmap(
+            correct_patient,
+            [(corrector, savedir, p, batch_size) for p in patient_paths],
+        )
 
 
 def collect_voxels(
@@ -65,7 +80,6 @@ def collect_voxels(
 
         if corrector is not None:
             corrected_ccta = corrector(ccta, desc=str(scan_path))
-            # torch.cuda.empty_cache()  # FIXME why is this needed to avoid ever growing memory?
             if savedir is not None:
                 savepath = savedir / io_utils.stem(str(scan_path))
                 corrector.save_scan(corrected_ccta, offset, spacing, savepath)

@@ -78,7 +78,7 @@ class CCTAContrastCorrector:
             patch_scaled = patch.to(self.device, non_blocking=True)
             corrected = patch_scaled - self.upsampler(self.model(patch_scaled))
             aggregator.append(corrected, bbox)
-        return aggregator.get_output(inplace=True)
+        return aggregator.get_output()
 
     def correct_scan_2D(
         self, ccta: np.ndarray, batch_size: int, desc: Optional[str] = None
@@ -101,7 +101,9 @@ class CCTAContrastCorrector:
     @torch.no_grad
     def __call__(self, ccta: np.ndarray, batch_size: int = 16, **kwargs) -> Tensor:
         corrected_scan = self.correct_scan(ccta, batch_size, **kwargs)
-        return self.scaler.unscale(corrected_scan).squeeze().detach().cpu()
+        corrected_scan = self.scaler.unscale(corrected_scan).squeeze().detach().cpu()
+        torch.cuda.empty_cache()
+        return corrected_scan
 
     @staticmethod
     def save_scan(
@@ -110,6 +112,7 @@ class CCTAContrastCorrector:
         if isinstance(ccta, Tensor):
             ccta = ccta.numpy()
         # WHD -> DHW (xyz->zyx, numpy to sitk convention)
+        ccta = ccta.astype(np.int16)
         io_utils.to_sitk(ccta.transpose(2, 1, 0), offset, spacing, str(savepath))
 
     @classmethod
@@ -117,7 +120,7 @@ class CCTAContrastCorrector:
         cls: "CCTAContrastCorrector",
         inference_patch_size: ArrayShape,
         device: torch.device,
-        checkpoint_path: Optional[Union[str, Path]] = None,
+        checkpoint_path: Union[str, Path],
     ):
         if len(inference_patch_size) < 3:
             from contrast_gan_3D.experiments.conf_2D import generator_class
