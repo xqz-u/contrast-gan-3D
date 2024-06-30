@@ -1,8 +1,3 @@
-import os
-
-# https://discuss.pytorch.org/t/gpu-device-ordering/60785/2
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-
 import time
 from dataclasses import dataclass, field
 from pathlib import Path

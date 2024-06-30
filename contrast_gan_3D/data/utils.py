@@ -23,6 +23,7 @@ def create_patient(
     ostia_path: str | Path,
     out_dir: str | Path,
 ):
+    logger.info("Preprocessing '%s'..", str(ccta_path))
     img, meta = io_utils.load_sitk_image(ccta_path)  # img: WHD
     ostia_world, _ = io_utils.load_mevis_coords(ostia_path)  # (2, [xyz])
     centerlines_world = io_utils.load_centerlines(centerlines_dir)  # (N, [xyzr])
@@ -43,6 +44,7 @@ def create_patient(
         "name": patient_name,
     }
     write_pickle(meta, out_dir / f"{patient_name}_meta.pkl")
+    logger.info("Created patient '%s'", str(out_dir / f"{patient_name}.npy"))
 
 
 def load_patient(patient_name: Path | str) -> tuple[np.ndarray, dict]:
