@@ -162,3 +162,11 @@ def grid_to_cartesian_coords(grid_mask_3D: Array) -> Array:
     if isinstance(grid_mask_3D, torch.Tensor):
         cart_coords = torch.tensor(cart_coords)
     return cart_coords
+
+
+def pointwise_euclidean_distance(
+    centerlines: np.ndarray, annotations: np.ndarray
+) -> np.ndarray:
+    # centerlines: (X, 3), annotations: (Y, 3)
+    delta = centerlines[:, None, :] - annotations[None]  # (X, Y, 3)
+    return np.sqrt(np.square(delta).sum(-1))  # euclidean distance, shape (X, Y)

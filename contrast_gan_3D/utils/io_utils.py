@@ -28,15 +28,10 @@ def stem(path: Union[str, Path]) -> str:
     return basename(path).split(".")[0]
 
 
-def load_ASOCA_annotated_centerlines(annotation_fname: Union[str, Path]) -> np.ndarray:
-    with open(annotation_fname) as fd:
-        centerlines = [list(map(float, line.strip().split()[1:])) for line in fd]
-    return np.vstack(centerlines)
-
-
-def load_centerlines(folder_path: Union[str, Path]) -> np.ndarray:
+def load_centerlines(folder_path: Union[str, Path], glob_str: str = None) -> np.ndarray:
     folder_path = Path(folder_path)
-    vessel_files = folder_path.glob("vessel[0-9]*.txt")
+    glob_str = glob_str or "vessel[0-9]*.txt"
+    vessel_files = folder_path.glob(glob_str)
     centerlines = [np.loadtxt(v) for v in vessel_files]
     return np.concatenate(centerlines or [[]], axis=0, dtype=np.float32)
 
@@ -126,3 +121,9 @@ def to_sitk(
     logger.info("Saving scan to '%s'...", savepath)
     sitk.WriteImage(im, savepath, useCompression=True)
     logger.info("DONE")
+
+
+def load_ASOCA_annotated_centerlines(annotation_fname: str | Path) -> np.ndarray:
+    with open(annotation_fname) as fd:
+        centerlines = [list(map(float, line.strip().split()[1:])) for line in fd]
+    return np.vstack(centerlines if len(centerlines) else [[]])
