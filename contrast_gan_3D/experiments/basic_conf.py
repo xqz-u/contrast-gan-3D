@@ -1,6 +1,9 @@
 from functools import partial
 
 import numpy as np
+from batchgenerators.dataloading.nondet_multi_threaded_augmenter import (
+    NonDetMultiThreadedAugmenter,
+)
 from batchgenerators.transforms.abstract_transforms import Compose
 from batchgenerators.transforms.spatial_transforms import SpatialTransform_2
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
@@ -58,6 +61,7 @@ critic_args = {
     "channels_in": 1,
     "init_channels_out": 8,
     "discriminator_depth": 3,
+    "negative_slope": 0.2,
 }
 critic_class = partial(PatchGANDiscriminator, **critic_args)
 critic_optim_class = partial(Adam, lr=lr, betas=betas)
@@ -68,13 +72,15 @@ train_patch_size = TRAIN_PATCH_SIZE
 val_patch_size = VAL_PATCH_SIZE
 
 train_batch_size = {
+    # v.value: b
+    # for v, b in [(ScanType.OPT, 10), (ScanType.LOW, 5), (ScanType.HIGH, 5)]
     v.value: b
-    for v, b in [(ScanType.OPT, 10), (ScanType.LOW, 5), (ScanType.HIGH, 5)]
-    # v.value: b for v, b in [(ScanType.OPT, 6), (ScanType.LOW, 3), (ScanType.HIGH, 3)]
+    for v, b in [(ScanType.OPT, 6), (ScanType.LOW, 3), (ScanType.HIGH, 3)]
 }
-val_batch_size = {v.value: 3 for v in ScanType}
+val_batch_size = {v.value: 2 for v in ScanType}
 
-num_workers = (4, 2)  # (train, validation)
+augmenter_class = NonDetMultiThreadedAugmenter
+num_workers = (4, 1)  # (train, validation)
 
 dataset_paths = ["/home/marco/data/ostia_final.xlsx"]
 
