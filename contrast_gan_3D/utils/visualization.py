@@ -283,7 +283,7 @@ def plot_HU_distributions(
 
 
 # NOTE maybe save as pdf for better quality
-def create_eval_plot(
+def HU_distribution_shift_plot(
     og_voxels: dict[ScanType, dict[str, np.ndarray]],
     corrected_voxels: dict[ScanType, dict[str, np.ndarray]],
     plot_savepath: str | Path | None,

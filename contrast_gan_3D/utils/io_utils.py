@@ -66,7 +66,7 @@ def load_sitk_image(
     target_orientation: str = ORIENTATION,
 ) -> Tuple[np.ndarray, Dict[str, Union[str, np.ndarray]]]:
     image_path = Path(image_path)
-    image = sitk.ReadImage(image_path)
+    image = sitk.ReadImage(image_path.resolve())
 
     orientation = get_scan_orientation(image)
     if orientation != target_orientation:
