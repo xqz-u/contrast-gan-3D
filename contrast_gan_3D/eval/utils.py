@@ -12,12 +12,15 @@ def correct_patient(
     patient_path: str | Path,
     batch_size: int = 16,
 ):
-    scan, meta = data_u.load_patient(str(patient_path))
+    patient_path = str(patient_path)
+    if patient_path.endswith(".mhd"):
+        scan, meta = io_utils.load_sitk_image(patient_path)
+    else:
+        scan, meta = data_u.load_patient(patient_path)
+        scan = scan[..., 0]
     offset, spacing = meta["offset"], meta["spacing"]
-    corrected_ccta = corrector(
-        scan[..., 0], batch_size=batch_size, desc=str(patient_path)
-    )
-    savepath = Path(savedir) / io_utils.stem(str(patient_path))
+    corrected_ccta = corrector(scan, batch_size=batch_size, desc=patient_path)
+    savepath = Path(savedir) / io_utils.stem(patient_path)
     corrector.save_scan(corrected_ccta, offset, spacing, savepath)
 
 
