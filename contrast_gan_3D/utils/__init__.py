@@ -65,3 +65,7 @@ def swap_last_dim(t: Array) -> Array:
     if isinstance(t, torch.Tensor):
         t = t.permute((last_dim, *rest_dim))
     return t
+
+
+def downsample(a: np.ndarray, size: int) -> np.ndarray:
+    return np.random.choice(a, size=size, replace=False)

@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Iterable, Optional, Tuple, Union
 
 import numpy as np
+import seaborn as sns
 import torch
 from matplotlib import cm, colors
 from matplotlib import pyplot as plt
@@ -12,6 +13,7 @@ from torchvision.utils import make_grid
 
 from contrast_gan_3D.alias import ScanType
 from contrast_gan_3D.constants import VMAX, VMIN
+from contrast_gan_3D.utils import downsample
 from contrast_gan_3D.utils import geometry as geom
 from contrast_gan_3D.utils import logging_utils
 
@@ -250,31 +252,37 @@ def plot_GMM_fitted_ostium_patch(
     return axes
 
 
+def downsampled_hist(
+    a: np.ndarray,
+    maxsize: int = int(1e5),
+    xlims: tuple[int, int] | None = None,
+    **kwargs,
+) -> Axes:
+    if len(a) > maxsize:
+        a = downsample(a, maxsize)
+    if xlims is not None:
+        a = np.concatenate([np.array([xlims[0]]), a, np.array([xlims[1]])])
+    return sns.histplot(a, **kwargs)
+
+
 def plot_HU_distributions(
     subopt: np.ndarray,
     corrected_subopt: np.ndarray,
     opt: np.ndarray,
     ax: Axes | None = None,
-    nbins: int = 80,
-    alpha: float = 0.5,
     title: str | None = None,
+    alpha: float = 0.6,
+    **kwargs,
 ) -> Axes:
     if ax is None:
         _, ax = plt.subplots()
-    args = {"bins": nbins, "alpha": alpha, "density": True}
-    # args = {"bins": nbins, "alpha": alpha, "density": False}
-    ax.hist(subopt, label="Suboptimal", **args)
-    ax.hist(corrected_subopt, label="Corrected Suboptimal", **args)
+    args = {"stat": "density", "kde": True, "edgecolor": "none", "alpha": alpha}
 
-    offset = 0.01
-    bins, edges = np.histogram(opt, nbins, density=True)
-    # bins, edges = np.histogram(opt, nbins, density=False)
-    edges = np.hstack([edges.min() - offset, edges, edges.max() + offset])
-    bins = np.hstack([0, bins, 0])
-
-    X = np.dstack([edges[:-1], edges[1:]]).ravel()
-    Y = np.dstack([bins, bins]).ravel()
-    ax.plot(X, Y, "k--", label="Optimal")
+    downsampled_hist(subopt, label="Suboptimal", ax=ax, **args, **kwargs)
+    downsampled_hist(
+        corrected_subopt, label="Corrected suboptimal", ax=ax, **args, **kwargs
+    )
+    downsampled_hist(opt, label="Optimal", ax=ax, **args, **kwargs)
 
     if title is not None:
         ax.set_title(title)
@@ -282,51 +290,57 @@ def plot_HU_distributions(
     return ax
 
 
-# NOTE maybe save as pdf for better quality
 def HU_distribution_shift_plot(
     og_voxels: dict[ScanType, dict[str, np.ndarray]],
     corrected_voxels: dict[ScanType, dict[str, np.ndarray]],
     plot_savepath: str | Path | None,
     show: bool,
+    save_suffix: str = "png",
+    titles_map: dict[str, str] | None = None,
 ):
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
 
+    axes[0, 0].set_ylabel(r"$\leq$ 300 HU")
+    axes[1, 0].set_ylabel(r"$\geq$ 500 HU")
+    xlims = (-200, 800)
     for ax in axes.flat:
-        ax.set_xlim(-200, 800)
-        ax.set_ylim(0, 0.0075)
+        ax.set_xlim(*xlims)
+        # ax.set_ylim(0, 0.0075)
         ax.set_yticks([])
 
     for i, st in enumerate([ScanType.LOW, ScanType.HIGH]):
-        for j, (tag, nbins) in enumerate(zip(og_voxels[st].keys(), [100, 4, 100])):
+        for j, tag in enumerate(og_voxels[st].keys()):
+            ax_title = tag.capitalize()
+            if i == 1:
+                ax_title = None
+            elif titles_map is not None:
+                ax_title = titles_map.get(tag, ax_title)
             plot_HU_distributions(
                 og_voxels[st][tag],
                 corrected_voxels[st][tag],
                 og_voxels[ScanType.OPT][tag],
                 ax=axes[i, j],
-                title=tag.capitalize(),
-                nbins=nbins,
+                title=ax_title,
+                # xlims=xlims,
             )
-    axes[0, 0].set_ylabel(r"$\leq$ 300 HU")
-    axes[1, 0].set_ylabel(r"$\geq$ 500 HU")
+        # for ax in axes[i]:
+        #     if i == 0:
+        #         ax.set_xticks([])
 
-    fig.suptitle("HU Distribution", fontsize=16)
     handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.tight_layout()
     fig.legend(
         handles,
         labels,
-        # loc="upper right",
-        # bbox_to_anchor=(1, 1),
-        # ncol=1,
         loc="upper center",
-        bbox_to_anchor=(0.5, 0.93),
+        bbox_to_anchor=(0.5, 1.05),
         ncol=3,
         fancybox=True,
         shadow=True,
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.93])
     if plot_savepath is not None:
-        plot_savepath = Path(plot_savepath).with_suffix(".png")
-        plt.savefig(plot_savepath)
+        plot_savepath = Path(plot_savepath).with_suffix(save_suffix)
+        fig.savefig(plot_savepath, bbox_inches="tight")
         print(f"Saved figure to {str(plot_savepath)!r}")
     if show:
         plt.show()
